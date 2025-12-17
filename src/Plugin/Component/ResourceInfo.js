@@ -26,7 +26,26 @@ export default class ResourceInfo extends AbstractComponent{
      */
     generateModelInfo(entry, result){
 
+    }
 
+    // Editor (three) -> INST (file/game) mapping used by your Inst.build():
+    // instX = editorX
+    // instY = -editorZ
+    // instZ = editorY
+    static editorPosToInst(pos){
+        return {
+            x: pos.x,
+            y: -pos.z,
+            z: pos.y
+        };
+    }
+
+    static instToEditorPos(inst){
+        return {
+            x: inst.x,
+            y: inst.z,
+            z: -inst.y
+        };
     }
 
     /**
@@ -44,6 +63,7 @@ export default class ResourceInfo extends AbstractComponent{
         let materialInfo;
         let normalizedModel;
         let _this = this;
+
         switch (entry.type) {
 
             case Studio.AREA_LOCATION:
@@ -64,6 +84,7 @@ export default class ResourceInfo extends AbstractComponent{
 
                             let attr = jQuery(e.target).attr('name');
                             let value = parseFloat(jQuery(e.target).val());
+                            if (isNaN(value)) return;
 
                             if (attr === "x")
                                 entry.mesh.position.x = value;
@@ -115,7 +136,9 @@ export default class ResourceInfo extends AbstractComponent{
                      */
                     postprocess: function ( element ) {
                         element.find('input').keyup(function (e) {
-                            entry.props.radius = parseFloat(jQuery(e.target).val());
+                            let v = parseFloat(jQuery(e.target).val());
+                            if (isNaN(v)) return;
+                            entry.props.radius = v;
                         });
 
                     }
@@ -129,11 +152,11 @@ export default class ResourceInfo extends AbstractComponent{
                         let studioScene = StudioScene.getStudioSceneInfo().studioScene;
                         if (studioScene instanceof SceneMap){
 
-
                             if (entry.props.waypoints.length === 0){
-                                alert("BUG: Unable to remove node without waypoint relations");
+                                alert("BUG: Unable to remove node without waypoint waypoint relations");
                                 return;
                             }
+
                             /**
                              * @type {Node}
                              */
@@ -152,10 +175,8 @@ export default class ResourceInfo extends AbstractComponent{
                     }
                 });
 
-
-
-
                 break;
+
             case Studio.ENTITY:
 
                 let game = Games.getGame(entry.gameId);
@@ -172,7 +193,6 @@ export default class ResourceInfo extends AbstractComponent{
                         level: entry.level,
                         name: record.props.model
                     });
-
 
                     /**
                      * @type {NormalizeModel}
@@ -197,25 +217,30 @@ export default class ResourceInfo extends AbstractComponent{
                     value: record.name
                 });
 
-
                 object = StudioScene.getStudioSceneInfo().scene.getObjectByName(entry.name);
+
+                // --- FIX: display INST coordinates (file/game), not editor (three) coordinates ---
+                const instPos = ResourceInfo.editorPosToInst(object.position);
+
                 result.push({
                     label: 'Position',
                     value: `
-<span class="badge badge-secondary">x</span>:<input name="x" value="${object.position.x.toFixed(2)}" style="width: 40px;" /> 
-<span class="badge badge-secondary">y</span>:<input name="y" value="${object.position.y.toFixed(2)}" style="width: 40px;" />
-<span class="badge badge-secondary">z</span>:<input name="z" value="${object.position.z.toFixed(2)}" style="width: 40px;" />
+<span class="badge badge-secondary">x</span>:<input name="x" value="${instPos.x.toFixed(2)}" style="width: 40px;" /> 
+<span class="badge badge-secondary">y</span>:<input name="y" value="${instPos.y.toFixed(2)}" style="width: 40px;" />
+<span class="badge badge-secondary">z</span>:<input name="z" value="${instPos.z.toFixed(2)}" style="width: 40px;" />
 `,
                     /**
                      * @param element {jQuery}
                      */
                     postprocess: function ( element ) {
-                        element.find('span').click(function () {
 
+                        // copy as INST coords
+                        element.find('span').click(function () {
+                            const p = ResourceInfo.editorPosToInst(object.position);
                             navigator.clipboard.writeText(`{
-    "x": ${object.position.x.toFixed(2)},
-    "y": ${object.position.z.toFixed(2) * -1},
-    "z": ${object.position.y.toFixed(2)}
+    "x": ${p.x.toFixed(2)},
+    "y": ${p.y.toFixed(2)},
+    "z": ${p.z.toFixed(2)}
 }`);
                         });
 
@@ -223,13 +248,18 @@ export default class ResourceInfo extends AbstractComponent{
 
                             let attr = jQuery(e.target).attr('name');
                             let value = parseFloat(jQuery(e.target).val());
+                            if (isNaN(value)) return;
 
+                            // Apply UI (INST) back to editor coords:
+                            // editorX = instX
+                            // editorY = instZ
+                            // editorZ = -instY
                             if (attr === "x")
                                 object.position.x = value;
                             if (attr === "y")
-                                object.position.y = value;
+                                object.position.z = -value;
                             if (attr === "z")
-                                object.position.z = value;
+                                object.position.y = value;
 
                         });
 
@@ -242,16 +272,15 @@ export default class ResourceInfo extends AbstractComponent{
                     postprocess: function ( element ) {
                         element.find('span').click(function () {
 
-                        navigator.clipboard.writeText(`{
+                            navigator.clipboard.writeText(`{
     "x": ${object.quaternion.x.toFixed(2)},
-    "y": ${object.quaternion.z.toFixed(2)},
-    "z": ${object.quaternion.y.toFixed(2) * -1},
-    "w": ${object.quaternion.w.toFixed(2)},
+    "y": ${(object.quaternion.z).toFixed(2)},
+    "z": ${(object.quaternion.y * -1).toFixed(2)},
+    "w": ${object.quaternion.w.toFixed(2)}
 }`);
                         });
                     }
                 });
-
 
                 switch (record.props.getValue('CLASS')) {
                     case 'EC_TRIGGER':
@@ -262,6 +291,7 @@ export default class ResourceInfo extends AbstractComponent{
                         break;
                 }
                 break;
+
             case Studio.MODEL:
 
                 /**
@@ -316,6 +346,7 @@ export default class ResourceInfo extends AbstractComponent{
                 });
 
                 break;
+
             case Studio.TEXTURE:
                 /**
                  * @type {NormalizedTexture}
@@ -326,35 +357,6 @@ export default class ResourceInfo extends AbstractComponent{
                     label: 'Dimensions',
                     value: data.texture.width + 'x' + data.texture.height
                 });
-
-                //TODO: die info sollte aus einer texture class kommen und nicht hier bestimmt werden
-                // switch (data.info.rasterFormat & 0xf00) {
-                //     case Renderware.RASTER_565:
-                //         result.push({
-                //             label: 'Format',
-                //             value: 'DXT 1 (RGBA)'
-                //         });
-                //         break;
-                //     case Renderware.RASTER_1555:
-                //         result.push({
-                //             label: 'Format',
-                //             value: 'DXT 1 (RGB)'
-                //         });
-                //
-                //         break;
-                //     case Renderware.RASTER_4444:
-                //         result.push({
-                //             label: 'Format',
-                //             value: 'DXT 2'
-                //         });
-                //
-                //         break;
-                //     default:
-                //         result.push({
-                //             label: 'Format',
-                //             value: 'Unknown ' + (data.info.rasterFormat & 0xf00)
-                //         });
-                // }
 
                 break;
 
