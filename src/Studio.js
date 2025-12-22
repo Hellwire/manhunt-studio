@@ -1,3 +1,5 @@
+// Studio.js (FULL PATCHED FILE - based on the Studio.js you pasted)
+
 import Loader from "./Plugin/Loader.js";
 import Components from "./Plugin/Components.js";
 import Layout from "./Layout.js";
@@ -24,9 +26,17 @@ import Glg from "./Plugin/Builder/Game/ManhuntGeneric/Glg.js";
 import Txd from "./Plugin/Builder/Game/Manhunt/Txd.js";
 import Col from "./Plugin/Builder/Game/ManhuntGeneric/Col.js";
 import SceneModel from "./Scene/SceneModel.js";
-import OBJExporter from "./Vendor/OBJExporter.js"
+import OBJExporter from "./Vendor/OBJExporter.js";
 
-export default class Studio{
+import {
+    Box3,
+    Vector3,
+    Mesh,
+    MeshBasicMaterial,
+    BoxGeometry
+} from "./Vendor/three.module.js";
+
+export default class Studio {
 
     /**
      *
@@ -63,7 +73,350 @@ export default class Studio{
     static clipboard = null;
     static copyCount = 0;
 
-    static registerPlugins(){
+    // ============================================================
+    // Placeholder model system (entities with no model / no mesh)
+    // ============================================================
+
+    static _placeholderSelectionByContext = {};    // key => { name: string|null, type: number|null }
+    static _placeholderPrototypeCache = {};        // key => Object3D/Mesh|null
+
+    static _placeholderContextKey(gameId, level) {
+        return `studio.placeholderModel.${gameId}.${level}`;
+    }
+
+    static _readLocalStorage(key) {
+        try { return localStorage.getItem(key); } catch (e) { return null; }
+    }
+
+    static _writeLocalStorage(key, valueOrNull) {
+        try {
+            if (valueOrNull === null || valueOrNull === undefined) localStorage.removeItem(key);
+            else localStorage.setItem(key, valueOrNull);
+        } catch (e) { }
+    }
+
+    static hasPlaceholderModelSelection(sceneMap) {
+        if (!(sceneMap instanceof SceneMap)) return false;
+
+        const key = Studio._placeholderContextKey(sceneMap.mapEntry.gameId, sceneMap.mapEntry.level);
+        const mem = Studio._placeholderSelectionByContext[key];
+        if (mem && (mem.name !== undefined)) return true;
+
+        const raw = Studio._readLocalStorage(key);
+        return raw !== null && raw !== "";
+    }
+
+    static _getPlaceholderSelection(sceneMap) {
+        const key = Studio._placeholderContextKey(sceneMap.mapEntry.gameId, sceneMap.mapEntry.level);
+
+        if (Studio._placeholderSelectionByContext[key] && Studio._placeholderSelectionByContext[key].name !== undefined) {
+            return Studio._placeholderSelectionByContext[key];
+        }
+
+        const raw = Studio._readLocalStorage(key);
+        if (!raw) {
+            Studio._placeholderSelectionByContext[key] = { name: null, type: null };
+            return Studio._placeholderSelectionByContext[key];
+        }
+
+        // stored as "type|name" or just "name"
+        let type = null;
+        let name = raw;
+
+        const pipe = raw.indexOf("|");
+        if (pipe !== -1) {
+            const left = raw.substring(0, pipe);
+            const right = raw.substring(pipe + 1);
+            const t = parseInt(left, 10);
+            if (!Number.isNaN(t)) type = t;
+            name = right;
+        }
+
+        Studio._placeholderSelectionByContext[key] = { name: name, type: type };
+        return Studio._placeholderSelectionByContext[key];
+    }
+
+    static _setPlaceholderSelection(sceneMap, nameOrNull, typeOrNull) {
+        const key = Studio._placeholderContextKey(sceneMap.mapEntry.gameId, sceneMap.mapEntry.level);
+
+        Studio._placeholderSelectionByContext[key] = { name: nameOrNull, type: typeOrNull };
+        Studio._placeholderPrototypeCache[key] = undefined;
+
+        if (nameOrNull === null || nameOrNull === undefined) {
+            Studio._writeLocalStorage(key, null);
+        } else {
+            const stored = (typeOrNull !== null && typeOrNull !== undefined) ? `${typeOrNull}|${nameOrNull}` : `${nameOrNull}`;
+            Studio._writeLocalStorage(key, stored);
+        }
+    }
+
+    static _safeFindBy(game, queryObj) {
+        try {
+            if (game && typeof game.findBy === "function") return game.findBy(queryObj) || [];
+        } catch (e) { }
+        return [];
+    }
+
+    static _uniqueByName(results) {
+        const map = {};
+        const out = [];
+        results.forEach((r) => {
+            if (!r || !r.name) return;
+            if (map[r.name]) return;
+            map[r.name] = true;
+            out.push(r);
+        });
+        return out;
+    }
+
+    static _getPlaceholderCandidates(sceneMap) {
+        const game = Games.getGame(sceneMap.mapEntry.gameId);
+        const level = sceneMap.mapEntry.level;
+
+        // priority: MODEL/IMPORTED first, then ENTITY
+        let candidates = [];
+
+        candidates = candidates.concat(Studio._safeFindBy(game, { type: Studio.MODEL, level: level }));
+        candidates = candidates.concat(Studio._safeFindBy(game, { type: Studio.MODEL }));
+
+        candidates = candidates.concat(Studio._safeFindBy(game, { type: Studio.IMPORTED, level: level }));
+        candidates = candidates.concat(Studio._safeFindBy(game, { type: Studio.IMPORTED }));
+
+        candidates = candidates.concat(Studio._safeFindBy(game, { type: Studio.ENTITY, level: level }));
+
+        return Studio._uniqueByName(candidates);
+    }
+
+    static _promptPlaceholderModel(sceneMap) {
+        const candidates = Studio._getPlaceholderCandidates(sceneMap);
+
+        if (candidates.length === 0) {
+            // no options; use cube fallback
+            Studio._setPlaceholderSelection(sceneMap, null, null);
+            return;
+        }
+
+        const maxList = 60;
+        const shown = candidates.slice(0, maxList);
+
+        let list = shown.map((c, i) => `${i + 1}: ${c.name}`).join("\n");
+        if (candidates.length > maxList) {
+            list += `\n... (${candidates.length - maxList} more not shown)`;
+        }
+
+        const msg =
+            "Some entities have no model and cannot be selected.\n\n" +
+            "Choose a placeholder model from already imported entries:\n\n" +
+            list +
+            "\n\nEnter a number (e.g. 1), a name exactly, or leave empty to use a cube marker.";
+
+        const input = prompt(msg, "1");
+        if (input === null) {
+            // cancel => keep existing selection if any; otherwise cube
+            const cur = Studio._getPlaceholderSelection(sceneMap);
+            if (!cur || cur.name === undefined) Studio._setPlaceholderSelection(sceneMap, null, null);
+            return;
+        }
+
+        const trimmed = String(input).trim();
+        if (trimmed === "") {
+            Studio._setPlaceholderSelection(sceneMap, null, null);
+            return;
+        }
+
+        const idx = parseInt(trimmed, 10);
+        if (!Number.isNaN(idx) && idx >= 1 && idx <= shown.length) {
+            const picked = shown[idx - 1];
+            Studio._setPlaceholderSelection(sceneMap, picked.name, picked.type);
+            return;
+        }
+
+        const byName = candidates.find((c) => c.name === trimmed);
+        if (byName) {
+            Studio._setPlaceholderSelection(sceneMap, byName.name, byName.type);
+        } else {
+            // invalid => cube
+            Studio._setPlaceholderSelection(sceneMap, null, null);
+        }
+    }
+
+    static ensurePlaceholderModelSelection(sceneMap, forcePrompt = false) {
+        if (!(sceneMap instanceof SceneMap)) return;
+
+        const cur = Studio._getPlaceholderSelection(sceneMap);
+        if (forcePrompt || cur.name === undefined) {
+            Studio._promptPlaceholderModel(sceneMap);
+            return;
+        }
+
+        // If no selection stored, prompt once only if asked
+        if (forcePrompt && (cur.name === null || cur.name === undefined)) {
+            Studio._promptPlaceholderModel(sceneMap);
+        }
+    }
+
+    static _deepCloneObject3D(root) {
+        if (!root || typeof root.clone !== "function") return null;
+
+        const clone = root.clone(true);
+
+        if (typeof clone.traverse === "function") {
+            clone.traverse((o) => {
+                if (!o || !o.isMesh) return;
+
+                if (o.geometry && typeof o.geometry.clone === "function") {
+                    o.geometry = o.geometry.clone();
+                }
+
+                if (o.material) {
+                    if (Array.isArray(o.material)) {
+                        o.material = o.material.map((m) => (m && typeof m.clone === "function") ? m.clone() : m);
+                    } else if (typeof o.material.clone === "function") {
+                        o.material = o.material.clone();
+                    }
+                }
+            });
+        }
+
+        return clone;
+    }
+
+    static _normalizeToMaxAxis(root, targetMaxAxis = 0.5) {
+        try {
+            const box = new Box3().setFromObject(root);
+            const size = new Vector3();
+            box.getSize(size);
+
+            const maxAxis = Math.max(size.x, size.y, size.z);
+            if (maxAxis > 0.00001) {
+                const s = targetMaxAxis / maxAxis;
+                root.scale.multiplyScalar(s);
+            }
+        } catch (e) { }
+    }
+
+    static _tagEntityRecursive(obj, entityResult) {
+        if (!obj) return;
+
+        obj.userData = obj.userData || {};
+        obj.userData.entity = entityResult;
+
+        if (typeof obj.traverse === "function") {
+            obj.traverse((o) => {
+                if (!o) return;
+                o.userData = o.userData || {};
+                o.userData.entity = entityResult;
+            });
+        }
+    }
+
+    static _makeFallbackCube(size = 0.5) {
+        const mesh = new Mesh(
+            new BoxGeometry(size, size, size),
+            new MeshBasicMaterial({ wireframe: true, color: 0xff11ff })
+        );
+        mesh.name = "entity_placeholder_cube";
+        return mesh;
+    }
+
+    static _resolvePlaceholderPrototype(sceneMap) {
+        const key = Studio._placeholderContextKey(sceneMap.mapEntry.gameId, sceneMap.mapEntry.level);
+        if (Studio._placeholderPrototypeCache[key] !== undefined) return Studio._placeholderPrototypeCache[key];
+
+        const sel = Studio._getPlaceholderSelection(sceneMap);
+        if (!sel || !sel.name) {
+            Studio._placeholderPrototypeCache[key] = null;
+            return null;
+        }
+
+        const game = Games.getGame(sceneMap.mapEntry.gameId);
+        const level = sceneMap.mapEntry.level;
+
+        let found = null;
+
+        // If sel.type is known, prefer that, else search all candidates by name
+        if (sel.type !== null && sel.type !== undefined) {
+            const list = Studio._safeFindBy(game, { type: sel.type, level: level })
+                .concat(Studio._safeFindBy(game, { type: sel.type }));
+            found = list.find((r) => r && r.name === sel.name) || null;
+        }
+
+        if (!found) {
+            const candidates = Studio._getPlaceholderCandidates(sceneMap);
+            found = candidates.find((r) => r && r.name === sel.name) || null;
+        }
+
+        if (!found) {
+            Studio._placeholderPrototypeCache[key] = null;
+            return null;
+        }
+
+        // Try to extract a Mesh/Object3D prototype from the selected entry
+        let proto = null;
+
+        try {
+            if (found.mesh && typeof found.mesh === "object") {
+                proto = found.mesh;
+            }
+        } catch (e) { }
+
+        if (!proto) {
+            try {
+                if (typeof found.data === "function") {
+                    const d = found.data();
+                    if (d && typeof d.getMesh === "function") {
+                        const m = d.getMesh();
+                        if (m && m !== false) proto = m;
+                    } else if (d && (d.isObject3D || d.isMesh || d.isGroup)) {
+                        proto = d;
+                    }
+                }
+            } catch (e) { }
+        }
+
+        Studio._placeholderPrototypeCache[key] = proto || null;
+        return Studio._placeholderPrototypeCache[key];
+    }
+
+    static createPlaceholderMeshForEntity(sceneMap, entityResult) {
+        // Does not prompt; caller controls prompt timing.
+        const proto = Studio._resolvePlaceholderPrototype(sceneMap);
+
+        let obj = null;
+
+        if (proto) {
+            obj = Studio._deepCloneObject3D(proto);
+            if (obj) Studio._normalizeToMaxAxis(obj, 0.5);
+        }
+
+        if (!obj) obj = Studio._makeFallbackCube(0.5);
+
+        obj.userData = obj.userData || {};
+        obj.userData.isPlaceholder = true;
+
+        // Apply entity transform (best effort; depends on your ENTITY data shape)
+        try {
+            const ed = (typeof entityResult.data === "function") ? entityResult.data() : null;
+
+            if (ed && ed.position && typeof obj.position?.copy === "function") {
+                obj.position.copy(ed.position);
+            }
+
+            // rotation could be quaternion-like (x,y,z,w) or euler-like (x,y,z)
+            if (ed && ed.rotation) {
+                if (ed.rotation.w !== undefined && obj.quaternion && typeof obj.quaternion.set === "function") {
+                    obj.quaternion.set(ed.rotation.x, ed.rotation.y, ed.rotation.z, ed.rotation.w);
+                } else if (ed.rotation.x !== undefined && obj.rotation && typeof obj.rotation.set === "function") {
+                    obj.rotation.set(ed.rotation.x, ed.rotation.y, ed.rotation.z);
+                }
+            }
+        } catch (e) { }
+
+        Studio._tagEntityRecursive(obj, entityResult);
+        return obj;
+    }
+
+    static registerPlugins() {
         Loader.registerPlugins();
         Components.registerSections();
     }
@@ -79,7 +432,6 @@ export default class Studio{
         Studio.createMenu();
         new Save();
 
-
         Layout.createDefaultLayout();
 
         WebGL.render();
@@ -89,7 +441,7 @@ export default class Studio{
 
     }
 
-    static createMenu(){
+    static createMenu() {
 
         Studio.menu = new Menu();
 
@@ -108,7 +460,7 @@ export default class Studio{
             callback: function (states) {
 
                 let studioScene = StudioScene.getStudioSceneInfo().studioScene;
-                if (studioScene instanceof SceneMap){
+                if (studioScene instanceof SceneMap) {
                     Status.show("Prepare Files...");
                     Studio.menu.closeAll();
 
@@ -118,16 +470,16 @@ export default class Studio{
 
                         let files = [];
 
-                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'entity.inst'    : 'entity_pc.inst', binary: Inst.build(game, level, false)});
-                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'pak/modelspc.dff'   : 'modelspc.mdl', binary: Dff.build(game, level)});
-                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'pak/modelspc.txd'   : 'modelspc.tex', binary: Txd.build(game, level)});
-                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'entityTypeData.ini' : 'resource3.glg', binary: Glg.build(game, level)});
-                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'collisions.col' : 'collisions_pc.col', binary: Col.build(game, level)});
+                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'entity.inst' : 'entity_pc.inst', binary: Inst.build(game, level, false) });
+                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'pak/modelspc.dff' : 'modelspc.mdl', binary: Dff.build(game, level) });
+                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'pak/modelspc.txd' : 'modelspc.tex', binary: Txd.build(game, level) });
+                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'entityTypeData.ini' : 'resource3.glg', binary: Glg.build(game, level) });
+                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'collisions.col' : 'collisions_pc.col', binary: Col.build(game, level) });
                         // files.push({ name: game.game === Games.GAMES.MANHUNT ? 'mapAI.grf'      : 'mapai_pc.grf', binary: Grf.build(game, level)});
 
                         Save.outputZip(files);
                         Status.hide();
-                    },100);
+                    }, 100);
 
                 }
             }
@@ -146,7 +498,7 @@ export default class Studio{
                     callback: function (states) {
 
                         let studioScene = StudioScene.getStudioSceneInfo().studioScene;
-                        if (studioScene instanceof SceneMap){
+                        if (studioScene instanceof SceneMap) {
                             let game = Games.getGame(studioScene.mapEntry.gameId);
                             let level = studioScene.mapEntry.level;
 
@@ -165,14 +517,15 @@ export default class Studio{
                     callback: function (states) {
 
                         let studioScene = StudioScene.getStudioSceneInfo().studioScene;
-                        if (studioScene instanceof SceneMap){
+                        if (studioScene instanceof SceneMap) {
                             let game = Games.getGame(studioScene.mapEntry.gameId);
                             let level = studioScene.mapEntry.level;
 
                             let binary = Inst.build(game, level, false);
                             Save.output(binary, 'entity.inst');
                             Studio.menu.closeAll();
-                        }            }
+                        }
+                    }
                 }));
 
                 catExport.addType(new ActionType({
@@ -182,7 +535,7 @@ export default class Studio{
                     callback: function (states) {
 
                         let studioScene = StudioScene.getStudioSceneInfo().studioScene;
-                        if (studioScene instanceof SceneMap){
+                        if (studioScene instanceof SceneMap) {
                             let game = Games.getGame(studioScene.mapEntry.gameId);
                             let level = studioScene.mapEntry.level;
 
@@ -200,7 +553,7 @@ export default class Studio{
                     callback: function (states) {
 
                         let studioScene = StudioScene.getStudioSceneInfo().studioScene;
-                        if (studioScene instanceof SceneMap){
+                        if (studioScene instanceof SceneMap) {
                             let game = Games.getGame(studioScene.mapEntry.gameId);
                             let level = studioScene.mapEntry.level;
 
@@ -218,7 +571,7 @@ export default class Studio{
                     callback: function (states) {
 
                         let studioScene = StudioScene.getStudioSceneInfo().studioScene;
-                        if (studioScene instanceof SceneMap){
+                        if (studioScene instanceof SceneMap) {
                             let game = Games.getGame(studioScene.mapEntry.gameId);
                             let level = studioScene.mapEntry.level;
 
@@ -235,7 +588,7 @@ export default class Studio{
                     callback: function (states) {
 
                         let studioScene = StudioScene.getStudioSceneInfo().studioScene;
-                        if (studioScene instanceof SceneMap){
+                        if (studioScene instanceof SceneMap) {
                             let game = Games.getGame(studioScene.mapEntry.gameId);
                             let level = studioScene.mapEntry.level;
 
@@ -246,7 +599,6 @@ export default class Studio{
                     }
                 }));
 
-
                 catExport.addType(new ActionType({
                     id: 'save-export',
                     label: 'export (testing)',
@@ -254,9 +606,9 @@ export default class Studio{
                     callback: function (states) {
 
                         let exporter = new OBJExporter();
-                        const result = exporter.parse( StudioScene.getStudioSceneInfo().scene );
+                        const result = exporter.parse(StudioScene.getStudioSceneInfo().scene);
 
-                        let blob = new Blob( [ result ], { type: 'application/octet-stream' } );
+                        let blob = new Blob([result], { type: 'application/octet-stream' });
 
                         const link = document.createElement("a");
                         link.href = URL.createObjectURL(blob);
@@ -268,16 +620,12 @@ export default class Studio{
                     }
                 }));
 
-
-
             }
 
         });
         catSave.addSubCategory(catExport);
 
-
         Studio.menu.addCategory(catSave);
-
 
         /**
          * Edit
@@ -288,16 +636,14 @@ export default class Studio{
             enabled: true
         });
 
-
         catEdit.addType(new ActionType({
             id: 'edit-copy',
             label: 'Copy',
             enabled: true,
             callback: function (states) {
                 let studioScene = StudioScene.getStudioSceneInfo().studioScene;
-                if (studioScene instanceof SceneMap){
+                if (studioScene instanceof SceneMap) {
                     Studio.menu.getById('edit-paste').enable();
-
 
                     /**
                      * @type {Walk}
@@ -305,7 +651,7 @@ export default class Studio{
                     let control = studioScene.sceneInfo.control;
 
                     let ogEntity = control.object.userData.entity;
-                    if (ogEntity === undefined || ogEntity === null){
+                    if (ogEntity === undefined || ogEntity === null) {
                         console.error('no entity found on object', control.object);
                         return;
                     }
@@ -315,12 +661,8 @@ export default class Studio{
                         entity: ogEntity
                     };
 
-                }else if (studioScene instanceof SceneModel){
+                } else if (studioScene instanceof SceneModel) {
                     alert("not supported right now, sry");
-                    // Studio.clipboard = {
-                    //     level: studioScene.sceneInfo.lookAt.level,
-                    //     entity: studioScene.sceneInfo.lookAt
-                    // };
                 }
 
                 Studio.menu.closeAll();
@@ -335,7 +677,7 @@ export default class Studio{
             callback: function () {
                 let studioSceneInfo = StudioScene.getStudioSceneInfo();
                 let studioScene = studioSceneInfo.studioScene;
-                if (studioScene instanceof SceneMap){
+                if (studioScene instanceof SceneMap) {
 
                     new Insert({
                         sceneInfo: studioScene.sceneInfo,
@@ -362,6 +704,33 @@ export default class Studio{
             }
         }));
 
+        // NEW: Placeholder model prompt + rebuild
+        catEdit.addType(new ActionType({
+            id: 'edit-placeholder-model',
+            label: 'Set placeholder model (unmodeled entities)',
+            enabled: true,
+            callback: function () {
+                let studioScene = StudioScene.getStudioSceneInfo().studioScene;
+                if (studioScene instanceof SceneMap) {
+                    studioScene.rebuildMissingEntityPlaceholders(true);
+                }
+                Studio.menu.closeAll();
+            }
+        }));
+
+        catEdit.addType(new ActionType({
+            id: 'edit-rebuild-placeholders',
+            label: 'Rebuild placeholders',
+            enabled: true,
+            callback: function () {
+                let studioScene = StudioScene.getStudioSceneInfo().studioScene;
+                if (studioScene instanceof SceneMap) {
+                    studioScene.rebuildMissingEntityPlaceholders(false);
+                }
+                Studio.menu.closeAll();
+            }
+        }));
+
         Studio.menu.addCategory(catEdit);
 
         /**
@@ -378,12 +747,9 @@ export default class Studio{
             label: 'Load Waypoints',
             callback: function (states) {
                 let studioScene = StudioScene.getStudioSceneInfo().studioScene;
-                if (studioScene instanceof SceneMap){
+                if (studioScene instanceof SceneMap) {
 
                     studioScene.waypoints = new Waypoints(studioScene);
-                    // studioScene.waypoints.nodeVisible(true);
-                    // studioScene.waypoints.lineVisible(true);
-                    // studioScene.waypoints.routeVisible(true);
 
                     Studio.menu.getById('waypoint-load-nodes').disable();
 
@@ -407,18 +773,18 @@ export default class Studio{
             enabled: false,
             callback: function (states) {
                 let studioScene = StudioScene.getStudioSceneInfo().studioScene;
-                if (studioScene instanceof SceneMap){
+                if (studioScene instanceof SceneMap) {
                     studioScene.waypoints.nodeVisible(states.active);
 
-                    if (states.active){
+                    if (states.active) {
                         let relStates = Studio.menu.getStatesById('waypoint-show-relations');
-                        if(relStates.active)
+                        if (relStates.active)
                             studioScene.waypoints.lineVisible(true);
 
                         let routesStates = Studio.menu.getStatesById('waypoint-show-routes');
-                        if(routesStates.active)
+                        if (routesStates.active)
                             studioScene.waypoints.routeVisible(true);
-                    }else{
+                    } else {
                         studioScene.waypoints.lineVisible(false);
                         studioScene.waypoints.routeVisible(false);
                     }
@@ -432,7 +798,7 @@ export default class Studio{
             enabled: false,
             callback: function (states) {
                 let studioScene = StudioScene.getStudioSceneInfo().studioScene;
-                if (studioScene instanceof SceneMap){
+                if (studioScene instanceof SceneMap) {
                     studioScene.waypoints.lineVisible(states.active);
                 }
             }
@@ -444,13 +810,12 @@ export default class Studio{
             enabled: false,
             callback: function (states) {
                 let studioScene = StudioScene.getStudioSceneInfo().studioScene;
-                if (studioScene instanceof SceneMap){
+                if (studioScene instanceof SceneMap) {
                     studioScene.waypoints.routeVisible(states.active);
                     studioScene.waypoints.routeHighlight(states.active);
                 }
             }
         }));
-
 
         /**
          * Waypoint => Routes
@@ -478,24 +843,17 @@ export default class Studio{
                             if (name === null || name === '')
                                 return;
 
-                            /**
-                             * We need to take sure the nodes are showed
-                             */
                             let showNodesType = Studio.menu.getById('waypoint-show-nodes');
-                            if (showNodesType.states.active === false){
+                            if (showNodesType.states.active === false) {
                                 showNodesType.triggerClick();
                             }
 
-                            /**
-                             * We need to take sure the nodes relations are showed
-                             */
                             let showNodesRelType = Studio.menu.getById('waypoint-show-relations');
-                            if (showNodesRelType.states.active === false){
+                            if (showNodesRelType.states.active === false) {
                                 showNodesRelType.triggerClick();
                             }
 
                             let game = Games.getGame(studioScene.mapEntry.gameId);
-
 
                             /**
                              * @type {Walk}
@@ -520,7 +878,7 @@ export default class Studio{
                                 "",
                                 0,
                                 routeData,
-                                function(){
+                                function () {
                                     return routeData;
                                 }
                             );
@@ -539,13 +897,11 @@ export default class Studio{
                     let waypoints = studioScene.waypoints;
                     waypoints.routes.forEach(function (route) {
 
-
                         let catWaypointRouteEntry = new Category({
                             id: 'waypoint-route-' + route.name,
                             label: route.name,
-                            callback: function (states) {  }
+                            callback: function (states) { }
                         });
-
 
                         catWaypointRouteEntry.addType(new ActionType({
                             id: 'waypoint-route-remove-' + route.name,
@@ -571,7 +927,6 @@ export default class Studio{
                                 waypoints.routes.splice(waypoints.routes.indexOf(route), 1);
 
                                 Studio.menu.closeAll();
-
 
                             }
                         }));
@@ -609,7 +964,6 @@ export default class Studio{
                             }
                         }));
 
-
                         catWaypointRoutes.addSubCategory(catWaypointRouteEntry);
 
                     });
@@ -626,7 +980,7 @@ export default class Studio{
             label: 'Areas',
             enabled: false,
             callback: function (states) {
-                if (states.open){
+                if (states.open) {
                     catWaypointArea.clear();
 
                     let studioSceneInfo = StudioScene.getStudioSceneInfo();
@@ -634,8 +988,7 @@ export default class Studio{
                         return;
 
                     let studioScene = studioSceneInfo.studioScene;
-                    if (studioScene instanceof SceneMap){
-
+                    if (studioScene instanceof SceneMap) {
 
                         let waypoints = studioScene.waypoints;
 
@@ -644,6 +997,7 @@ export default class Studio{
                             label: 'Create stopper',
                             callback: function (states) {
                                 waypoints.placeStopper();
+
                                 /**
                                  * @type {Walk}
                                  */
@@ -673,15 +1027,12 @@ export default class Studio{
                             }
                         }));
 
-
                         waypoints.children.forEach(function (area) {
 
                             let catWaypointAreaEntry = new Category({
                                 id: 'waypoint-area-' + area.name,
                                 label: area.name,
-                                callback: function (states) {
-
-                                }
+                                callback: function (states) { }
                             });
 
                             catWaypointAreaEntry.addType(new ActionType({
@@ -689,22 +1040,10 @@ export default class Studio{
                                 label: 'Add node',
                                 callback: function (states) {
 
-                                    /**
-                                     * We need to take sure the nodes are showed
-                                     */
                                     let showNodesType = Studio.menu.getById('waypoint-show-nodes');
-                                    if (showNodesType.states.active === false){
+                                    if (showNodesType.states.active === false) {
                                         showNodesType.triggerClick();
                                     }
-
-                                    /**
-                                     * Look at the first node in the area
-                                     */
-                                    // if (area.children.length > 0){
-                                    //     let node = area.children[0];
-                                    //     studioSceneInfo.control.playerCollider.end.copy(node.position);
-                                    //     studioSceneInfo.camera.position.copy(node.position);
-                                    // }
 
                                     requestAnimationFrame(function () {
                                         waypoints.placeNewNode(area.name);
@@ -715,17 +1054,13 @@ export default class Studio{
                                 }
                             }));
 
-
                             catWaypointAreaEntry.addType(new ActionType({
                                 id: `waypoint-area-${area.name}-gen`,
                                 label: 'Generate Mesh',
                                 callback: function (states) {
 
-                                    /**
-                                     * We need to take sure the nodes are showed
-                                     */
                                     let showNodesType = Studio.menu.getById('waypoint-show-nodes');
-                                    if (showNodesType.states.active === false){
+                                    if (showNodesType.states.active === false) {
                                         showNodesType.triggerClick();
                                     }
 
@@ -733,29 +1068,19 @@ export default class Studio{
                                      * @type {Walk}
                                      */
                                     let control = studioSceneInfo.control;
-                                    if (control.mode === "transform"){
+                                    if (control.mode === "transform") {
                                         waypoints.nodeGenerate(area, control.object.position);
+                                    } else {
 
-                                    }else{
-
-
-                                        /**
-                                         * Look at the first node in the area
-                                         */
-                                        if (area.children.length > 0){
+                                        if (area.children.length > 0) {
                                             let node = area.children[0];
-
                                             waypoints.nodeGenerate(area, node.getMesh().position);
-
                                         }
                                     }
-
-
 
                                     Studio.menu.closeAll();
                                 }
                             }));
-
 
                             catWaypointAreaEntry.addType(new ActionType({
                                 id: `waypoint-area-${area.name}-clear`,
@@ -772,12 +1097,9 @@ export default class Studio{
                                         let waypoints = studioScene.waypoints;
                                         waypoints.clear(area.name);
                                         Studio.menu.closeAll();
-
-
                                     }
                                 }
                             }));
-
 
                             catWaypointAreaEntry.addType(new ActionType({
                                 id: `waypoint-area-${area.name}-remove`,
@@ -800,16 +1122,11 @@ export default class Studio{
                                 }
                             }));
 
-
                             catWaypointArea.addSubCategory(catWaypointAreaEntry);
 
                         });
 
-
                     }
-
-
-
                 }
             }
         });

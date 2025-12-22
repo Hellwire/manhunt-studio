@@ -1,7 +1,6 @@
+// NormalizeModel.js (FULL PATCHED FILE)
 
 import {Bone, Face3, Matrix4, Skeleton, Vector2, Vector3, Vector4} from "./../../../../Vendor/three.module.js";
-
-
 
 export default class NormalizeModel{
 
@@ -13,9 +12,32 @@ export default class NormalizeModel{
 
         this.allBones = [];
         this.allBonesMesh = [];
+
+        // Axis fix: RW/game (x,y,z; Z-up) -> Editor/Three (x,z,-y; Y-up)
+        this._axisFixEnabled = true;
+        this._axisFixM = new Matrix4().makeRotationX(Math.PI / 2);
+        this._axisFixMInv = new Matrix4().makeRotationX(-Math.PI / 2);
+
         this.#normalize();
     }
 
+    // RW/game vec -> editor vec: (x, z, -y)
+    _fixVec3(v){
+        return new Vector3(v.x, v.z, -v.y);
+    }
+
+    _fixVec3FromArray(a){
+        // a = [x,y,z]
+        return new Vector3(a[0], a[2], -a[1]);
+    }
+
+    // RW/game matrix -> editor matrix: C * M * C^-1
+    _fixMatrix4(m){
+        if (!this._axisFixEnabled) return m;
+        const out = new Matrix4();
+        out.copy(this._axisFixM).multiply(m).multiply(this._axisFixMInv);
+        return out;
+    }
 
     #getFrameBones(){
 
@@ -141,7 +163,12 @@ export default class NormalizeModel{
     #createBone( data ){
         let bone = new Bone();
         bone.name = data.name;
-        bone.applyMatrix4((new Matrix4()).fromArray(data.frame.matrix));
+
+        // frame.matrix comes from RW/game basis; convert to editor basis
+        let m = (new Matrix4()).fromArray(data.frame.matrix);
+        m = this._fixMatrix4(m);
+
+        bone.applyMatrix4(m);
         return bone;
     }
 
@@ -181,7 +208,6 @@ export default class NormalizeModel{
 
         let result = {
             skeleton: false,
-
             bones: [],
             objects: []
         };
@@ -192,8 +218,20 @@ export default class NormalizeModel{
         });
 
         let meshBone;
-        meshes.forEach(function (mesh, index) {
+        meshes.forEach((mesh, index) => {
             meshBone = result.skeleton.bones[mesh.parentFrameID];
+
+            // Pre-fix normals once (if present)
+            let fixedNormals = [];
+            if (mesh.normal && mesh.normal.length > 0){
+                const n0 = mesh.normal[0];
+                if (n0 instanceof Vector3){
+                    fixedNormals = mesh.normal.map(n => this._fixVec3(n));
+                } else {
+                    // assume array normals like [x,y,z]
+                    fixedNormals = mesh.normal.map(n => this._fixVec3FromArray(n));
+                }
+            }
 
             let genericObject = {
                 material: [],
@@ -210,63 +248,45 @@ export default class NormalizeModel{
             };
 
             mesh.material.forEach(function (parsedMaterial) {
-
-                // //TODO diffuse color
-                // if (typeof parsedMaterial.TextureName === "undefined") return;
-                //
-                // let material = new MeshStandardMaterial();
-                // material.name = parsedMaterial.textureName;
-                // material.skinning = genericObject.skinning;
-                // material.vertexColors = VertexColors;
-
                 genericObject.material.push(parsedMaterial.textureName);
             });
 
-            mesh.vertices.forEach(function (vertexInfo, index) {
+            mesh.vertices.forEach((vertexInfo, vi) => {
                 if (skinBones.length > 0 && typeof mesh.skinPLG.indices !== "undefined") {
 
                     let indice = new Vector4(0,0,0,0);
-                    indice.fromArray(mesh.skinPLG.indices[index]);
+                    indice.fromArray(mesh.skinPLG.indices[vi]);
                     genericObject.skinIndices.push(indice);
 
                     let weight = new Vector4(0,0,0,0);
-                    weight.fromArray(mesh.skinPLG.weights[index]);
+                    weight.fromArray(mesh.skinPLG.weights[vi]);
                     genericObject.skinWeights.push(weight);
                 }
 
+                // Vertex axis fix: (x, z, -y)
                 genericObject.vertices.push(
-                    new Vector3( vertexInfo[0], vertexInfo[1], vertexInfo[2] )
+                    new Vector3(vertexInfo[0], vertexInfo[2], -vertexInfo[1])
                 );
-
             });
 
             for(let x = 0; x < mesh.face.length; x++) {
 
                 let face = new Face3(mesh.face[x][0], mesh.face[x][1], mesh.face[x][2]);
-
                 face.materialIndex = mesh.materialPerFace[x];
 
-                if (mesh.normal.length > 0)
+                if (fixedNormals.length > 0){
                     face.vertexNormals = [
-                        mesh.normal[face.a],
-                        mesh.normal[face.b],
-                        mesh.normal[face.c]
+                        fixedNormals[face.a],
+                        fixedNormals[face.b],
+                        fixedNormals[face.c]
                     ];
+                }
 
                 if(mesh.uv1.length > 0){
                     genericObject.faceVertexUvs[0].push([
-                        new Vector2(
-                            mesh.uv1[face.a][0],
-                            mesh.uv1[face.a][1]
-                        ),
-                        new Vector2(
-                            mesh.uv1[face.b][0],
-                            mesh.uv1[face.b][1]
-                        ),
-                        new Vector2(
-                            mesh.uv1[face.c][0],
-                            mesh.uv1[face.c][1]
-                        ),
+                        new Vector2(mesh.uv1[face.a][0], mesh.uv1[face.a][1]),
+                        new Vector2(mesh.uv1[face.b][0], mesh.uv1[face.b][1]),
+                        new Vector2(mesh.uv1[face.c][0], mesh.uv1[face.c][1]),
                     ]);
                 }
 
@@ -283,7 +303,6 @@ export default class NormalizeModel{
 
         this.result = result;
     }
-
 
     #get(field){
         if (this.result[field] === undefined)
@@ -307,5 +326,4 @@ export default class NormalizeModel{
     getBones(){
         return this.#get('bones');
     }
-
 }

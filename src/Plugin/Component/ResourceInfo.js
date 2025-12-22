@@ -1,3 +1,4 @@
+// src/Component/Resource/ResourceInfo.js
 import AbstractComponent from "./Abstract.js";
 import Studio from "../../Studio.js";
 import Event from "../../Event.js";
@@ -17,15 +18,14 @@ export default class ResourceInfo extends AbstractComponent{
      */
     constructor(props) {
         super(props);
-
     }
 
     /**
-     *
      * @param entry {Result}
+     * @param result {Array}
      */
     generateModelInfo(entry, result){
-
+        // unchanged / unused in your snippet
     }
 
     // Editor (three) -> INST (file/game) mapping used by your Inst.build():
@@ -52,11 +52,7 @@ export default class ResourceInfo extends AbstractComponent{
      * @param entry {Result}
      */
     setEntry(entry){
-        if (entry === undefined)
-            return;
-
-        if (entry === null)
-            return;
+        if (entry === undefined || entry === null) return;
 
         let result = [];
         let object;
@@ -75,80 +71,55 @@ export default class ResourceInfo extends AbstractComponent{
 <span class="badge badge-secondary">y</span>:<input name="y" value="${entry.mesh.position.y.toFixed(2)}" style="width: 40px;" />
 <span class="badge badge-secondary">z</span>:<input name="z" value="${entry.mesh.position.z.toFixed(2)}" style="width: 40px;" />
 `,
-                    /**
-                     * @param element {jQuery}
-                     */
                     postprocess: function ( element ) {
-
                         element.find('input').keyup(function (e) {
-
                             let attr = jQuery(e.target).attr('name');
                             let value = parseFloat(jQuery(e.target).val());
                             if (isNaN(value)) return;
 
-                            if (attr === "x")
-                                entry.mesh.position.x = value;
-                            if (attr === "y")
-                                entry.mesh.position.y = value;
-                            if (attr === "z")
-                                entry.mesh.position.z = value;
-
+                            if (attr === "x") entry.mesh.position.x = value;
+                            if (attr === "y") entry.mesh.position.y = value;
+                            if (attr === "z") entry.mesh.position.z = value;
                         });
-
                     }
                 });
 
                 result.push({
                     label: 'Node Id',
                     value: `<input value="${entry.props.id}" />`,
-                    /**
-                     * @param element {jQuery}
-                     */
                     postprocess: function ( element ) {
                         element.find('input').keyup(function (e) {
                             entry.props.id = jQuery(e.target).val();
                         });
-
                     }
                 });
-
 
                 result.push({
                     label: 'Node name',
                     value: `<input value="${entry.props.nodeName}" />`,
-                    /**
-                     * @param element {jQuery}
-                     */
                     postprocess: function ( element ) {
                         element.find('input').keyup(function (e) {
                             entry.props.nodeName = jQuery(e.target).val();
                         });
-
                     }
                 });
-
 
                 result.push({
                     label: 'Radius',
                     value: `<input value="${entry.props.radius}" />`,
-                    /**
-                     * @param element {jQuery}
-                     */
                     postprocess: function ( element ) {
                         element.find('input').keyup(function (e) {
                             let v = parseFloat(jQuery(e.target).val());
                             if (isNaN(v)) return;
                             entry.props.radius = v;
                         });
-
                     }
                 });
-
 
                 result.push({
                     label: '&nbsp;',
                     value: `<span>Remove</span>`,
-                    onClick: function (  ) {
+                    onClick: function () {
                         let studioScene = StudioScene.getStudioSceneInfo().studioScene;
                         if (studioScene instanceof SceneMap){
 
@@ -157,27 +128,20 @@ export default class ResourceInfo extends AbstractComponent{
                                 return;
                             }
 
-                            /**
-                             * @type {Node}
-                             */
                             studioScene.waypoints.removeNodeId(entry.props.id);
 
-                            /**
-                             * @type {Walk}
-                             */
                             let control = StudioScene.getStudioSceneInfo().control;
                             control.keyStates.modeSelectObject = true;
                             control.setMode('select');
                             document.exitPointerLock();
                             _this.element.html('');
                         }
-
                     }
                 });
 
                 break;
 
-            case Studio.ENTITY:
+            case Studio.ENTITY: {
 
                 let game = Games.getGame(entry.gameId);
 
@@ -187,39 +151,66 @@ export default class ResourceInfo extends AbstractComponent{
                     name: entry.props.instance.props.glgRecord
                 });
 
-                if (record.props.model !== false){
+                if (record && record.props && record.props.model !== false){
                     let model = game.findOneBy({
                         type: Studio.MODEL,
                         level: entry.level,
                         name: record.props.model
                     });
 
-                    /**
-                     * @type {NormalizeModel}
-                     */
-                    normalizedModel = model.props.normalize();
+                    if (model){
+                        normalizedModel = model.props.normalize();
+                        object = normalizedModel.getObjects()[0];
 
-                    object = normalizedModel.getObjects()[0];
-
-                    result.push({
-                        label: 'Model',
-                        value: model.name
-                    });
+                        result.push({
+                            label: 'Model',
+                            value: model.name
+                        });
+                    }
                 }
 
-                result.push({
-                    label: 'Instance',
-                    value: entry.name
-                });
+                result.push({ label: 'Instance', value: entry.name });
+                result.push({ label: 'Record', value: record ? record.name : "(missing glg)" });
 
-                result.push({
-                    label: 'Record',
-                    value: record.name
-                });
+                const sceneInfo = StudioScene.getStudioSceneInfo();
+                const scene = sceneInfo ? sceneInfo.scene : null;
 
-                object = StudioScene.getStudioSceneInfo().scene.getObjectByName(entry.name);
+                object = scene ? scene.getObjectByName(entry.name) : null;
 
-                // --- FIX: display INST coordinates (file/game), not editor (three) coordinates ---
+                if (!object){
+                    result.push({
+                        label: 'Warning',
+                        value: `No scene object found for "${entry.name}" (cannot show/edit position).`
+                    });
+                    break;
+                }
+
+                // ✅ keep instance wired + data populated for export (no UI here)
+                if (entry.props && entry.props.instance){
+                    entry.props.instance.entity = entry.props.instance.entity || {};
+                    if (!entry.props.instance.entity.mesh) entry.props.instance.entity.mesh = object;
+
+                    const instDataRef = (typeof entry.props.instance.data === "function")
+                        ? entry.props.instance.data()
+                        : null;
+
+                    if (instDataRef){
+                        instDataRef.position = instDataRef.position || { x: 0, y: 0, z: 0 };
+                        instDataRef.rotation = instDataRef.rotation || { x: 0, y: 0, z: 0, w: 1 };
+
+                        // store EDITOR (three) coords; Inst.build converts to INST on write
+                        instDataRef.position.x = object.position.x;
+                        instDataRef.position.y = object.position.y;
+                        instDataRef.position.z = object.position.z;
+
+                        instDataRef.rotation.x = object.quaternion.x;
+                        instDataRef.rotation.y = object.quaternion.y;
+                        instDataRef.rotation.z = object.quaternion.z;
+                        instDataRef.rotation.w = object.quaternion.w;
+                    }
+                }
+
+                // --- show INST coordinates (file/game) in UI ---
                 const instPos = ResourceInfo.editorPosToInst(object.position);
 
                 result.push({
@@ -229,9 +220,6 @@ export default class ResourceInfo extends AbstractComponent{
 <span class="badge badge-secondary">y</span>:<input name="y" value="${instPos.y.toFixed(2)}" style="width: 40px;" />
 <span class="badge badge-secondary">z</span>:<input name="z" value="${instPos.z.toFixed(2)}" style="width: 40px;" />
 `,
-                    /**
-                     * @param element {jQuery}
-                     */
                     postprocess: function ( element ) {
 
                         // copy as INST coords
@@ -245,7 +233,6 @@ export default class ResourceInfo extends AbstractComponent{
                         });
 
                         element.find('input').keyup(function (e) {
-
                             let attr = jQuery(e.target).attr('name');
                             let value = parseFloat(jQuery(e.target).val());
                             if (isNaN(value)) return;
@@ -254,15 +241,21 @@ export default class ResourceInfo extends AbstractComponent{
                             // editorX = instX
                             // editorY = instZ
                             // editorZ = -instY
-                            if (attr === "x")
-                                object.position.x = value;
-                            if (attr === "y")
-                                object.position.z = -value;
-                            if (attr === "z")
-                                object.position.y = value;
+                            if (attr === "x") object.position.x = value;
+                            if (attr === "y") object.position.z = -value;
+                            if (attr === "z") object.position.y = value;
 
+                            // keep instData.position synced (editor coords)
+                            if (entry.props && entry.props.instance && typeof entry.props.instance.data === "function"){
+                                const instDataRef = entry.props.instance.data();
+                                if (instDataRef){
+                                    instDataRef.position = instDataRef.position || { x: 0, y: 0, z: 0 };
+                                    instDataRef.position.x = object.position.x;
+                                    instDataRef.position.y = object.position.y;
+                                    instDataRef.position.z = object.position.z;
+                                }
+                            }
                         });
-
                     }
                 });
 
@@ -271,7 +264,6 @@ export default class ResourceInfo extends AbstractComponent{
                     value: `<span class="badge badge-secondary">x</span>:${object.rotation.x.toFixed(2)} <span class="badge badge-secondary">y</span>:${object.rotation.y.toFixed(2)} <span class="badge badge-secondary">z</span>:${object.rotation.z.toFixed(2)} `,
                     postprocess: function ( element ) {
                         element.find('span').click(function () {
-
                             navigator.clipboard.writeText(`{
     "x": ${object.quaternion.x.toFixed(2)},
     "y": ${(object.quaternion.z).toFixed(2)},
@@ -282,84 +274,55 @@ export default class ResourceInfo extends AbstractComponent{
                     }
                 });
 
-                switch (record.props.getValue('CLASS')) {
-                    case 'EC_TRIGGER':
-                        result.push({
-                            label: 'Radius',
-                            value: `${entry.props.instance.data().settings.radius}`
-                        });
-                        break;
+                // existing trigger radius display (kept)
+                if (record && record.props && record.props.getValue('CLASS') === 'EC_TRIGGER'){
+                    result.push({
+                        label: 'Radius',
+                        value: `${entry.props.instance.data().settings.radius}`
+                    });
                 }
+
                 break;
+            }
 
             case Studio.MODEL:
 
-                /**
-                 * @type {NormalizeModel}
-                 */
                 normalizedModel = entry.props.normalize();
-
                 object = normalizedModel.getObjects()[0];
 
-                result.push({
-                    label: '&nbsp;',
-                    value: entry.file
-                });
-
-                result.push({
-                    label: 'Name',
-                    value: entry.name
-                });
-
-                result.push({
-                    label: 'Skinned',
-                    value: object.skinning ? 'Yes' : 'No'
-                });
-
-                result.push({
-                    label: 'Vertex Count',
-                    value: normalizedModel.data.vertexCount
-                });
+                result.push({ label: '&nbsp;', value: entry.file });
+                result.push({ label: 'Name', value: entry.name });
+                result.push({ label: 'Skinned', value: object.skinning ? 'Yes' : 'No' });
+                result.push({ label: 'Vertex Count', value: normalizedModel.data.vertexCount });
 
                 materialInfo = jQuery('<ul>').addClass('material');
                 object.material.forEach(function (name) {
                     (function (name) {
+                        materialInfo.append(
+                            jQuery('<li>').append(
+                                jQuery('<span>').html(name).click(function () {
+                                    let texture = Storage.findBy({
+                                        type: Studio.TEXTURE,
+                                        level: entry.level,
+                                        gameId: entry.gameId,
+                                        name: name
+                                    })[0];
 
-                        materialInfo.append(jQuery('<li>').append(jQuery('<span>').html(name).click(function () {
-
-                            let texture = Storage.findBy({
-                                type: Studio.TEXTURE,
-                                level: entry.level,
-                                gameId: entry.gameId,
-                                name: name
-                            })[0];
-
-                            Event.dispatch(Event.OPEN_ENTRY, { entry: texture });
-
-                        })));
+                                    Event.dispatch(Event.OPEN_ENTRY, { entry: texture });
+                                })
+                            )
+                        );
                     })(name);
                 });
 
-                result.push({
-                    label: 'Material',
-                    value: materialInfo
-                });
-
+                result.push({ label: 'Material', value: materialInfo });
                 break;
 
-            case Studio.TEXTURE:
-                /**
-                 * @type {NormalizedTexture}
-                 */
+            case Studio.TEXTURE: {
                 let data = entry.data();
-
-                result.push({
-                    label: 'Dimensions',
-                    value: data.texture.width + 'x' + data.texture.height
-                });
-
+                result.push({ label: 'Dimensions', value: data.texture.width + 'x' + data.texture.height });
                 break;
-
+            }
         }
 
         let container = jQuery('<ul>');
@@ -367,6 +330,7 @@ export default class ResourceInfo extends AbstractComponent{
             let li = jQuery('<li>');
             li.append(jQuery('<span>').append(info.label));
             li.append(jQuery('<div>').append(info.value));
+
             if (info.onClick !== undefined)
                 li.click(info.onClick);
 
@@ -378,5 +342,4 @@ export default class ResourceInfo extends AbstractComponent{
 
         this.element.html('').append(container);
     }
-
 }
