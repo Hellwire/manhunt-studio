@@ -1,3 +1,5 @@
+// src/Scene/Controler/Walk.js (FULL PATCHED FILE - BASIC UNDO for transforms only)
+
 import {Capsule} from "../../Vendor/Capsule.js";
 import {Group, Vector3, Raycaster, Vector2, TextureLoader, RepeatWrapping} from "../../Vendor/three.module.js";
 import {TransformControls} from "../Controls/TransformControls.js";
@@ -11,7 +13,153 @@ import {OutlinePass} from "../../Vendor/OutlinePass.js";
 import Studio from "../../Studio.js";
 import Config from "../../Config.js";
 
+// ------------------------------
+// Transform drag HUD (simple DOM)
+// ------------------------------
 
+function _fmt(n, d = 3) {
+    if (!Number.isFinite(n)) return "0";
+    return n.toFixed(d);
+}
+function _radToDeg(r) {
+    return r * (180 / Math.PI);
+}
+function _editorPosToInst(pos) {
+    // instX = editorX
+    // instY = -editorZ
+    // instZ = editorY
+    return {
+        x: pos.x,
+        y: -pos.z,
+        z: pos.y
+    };
+}
+
+class TransformDragHUD {
+    constructor() {
+        let el = document.querySelector('[data-transform-hud="1"]');
+        if (!el) {
+            el = document.createElement("div");
+            el.setAttribute("data-transform-hud", "1");
+            el.style.position = "fixed";
+            el.style.left = "12px";
+            el.style.bottom = "12px";
+            el.style.zIndex = "999999";
+            el.style.padding = "8px 10px";
+            el.style.background = "rgba(0,0,0,0.65)";
+            el.style.color = "#fff";
+            el.style.fontFamily = "monospace";
+            el.style.fontSize = "12px";
+            el.style.lineHeight = "1.35";
+            el.style.pointerEvents = "none";
+            el.style.whiteSpace = "pre";
+            el.style.borderRadius = "4px";
+            el.style.display = "none";
+            document.body.appendChild(el);
+        }
+
+        this.el = el;
+        this.active = false;
+
+        this.startPos = null;
+        this.startRot = null;
+        this.startScale = null;
+        this.lastObjectId = null;
+    }
+
+    show() { this.el.style.display = "block"; }
+    hide() {
+        this.el.style.display = "none";
+        this.active = false;
+        this.startPos = null;
+        this.startRot = null;
+        this.startScale = null;
+        this.lastObjectId = null;
+    }
+
+    begin(transform) {
+        if (!transform || !transform.object) return;
+
+        const obj = transform.object;
+
+        this.active = true;
+        this.startPos = obj.position ? obj.position.clone() : null;
+        this.startRot = obj.rotation ? obj.rotation.clone() : null;
+        this.startScale = obj.scale ? obj.scale.clone() : null;
+
+        this.lastObjectId = obj.uuid || obj.id || obj.name || null;
+
+        this.show();
+        this.update(transform);
+    }
+
+    update(transform) {
+        if (!this.active || !transform || !transform.object) return;
+
+        const obj = transform.object;
+
+        const curId = obj.uuid || obj.id || obj.name || null;
+        if (this.lastObjectId !== null && curId !== this.lastObjectId) {
+            this.begin(transform);
+            return;
+        }
+
+        const axis = transform.axis || "-";
+        const mode = transform.mode || "-";
+        const space = transform.space || "-";
+
+        const p = obj.position || { x: 0, y: 0, z: 0 };
+        const r = obj.rotation || { x: 0, y: 0, z: 0 };
+        const s = obj.scale || { x: 1, y: 1, z: 1 };
+
+        const inst = _editorPosToInst(p);
+
+        let extra = "";
+
+        if (this.startPos && mode === "translate") {
+            const dp = {
+                x: p.x - this.startPos.x,
+                y: p.y - this.startPos.y,
+                z: p.z - this.startPos.z
+            };
+            const instStart = _editorPosToInst(this.startPos);
+            const dinst = {
+                x: inst.x - instStart.x,
+                y: inst.y - instStart.y,
+                z: inst.z - instStart.z
+            };
+
+            extra =
+                "Delta (translate)\n" +
+                `  Editor dx ${_fmt(dp.x)}  dy ${_fmt(dp.y)}  dz ${_fmt(dp.z)}\n` +
+                `  INST   dx ${_fmt(dinst.x)}  dy ${_fmt(dinst.y)}  dz ${_fmt(dinst.z)}\n`;
+        } else if (this.startRot && mode === "rotate") {
+            extra =
+                "Delta (rotate deg)\n" +
+                `  dx ${_fmt(_radToDeg(r.x - this.startRot.x), 2)}  dy ${_fmt(_radToDeg(r.y - this.startRot.y), 2)}  dz ${_fmt(_radToDeg(r.z - this.startRot.z), 2)}\n`;
+        } else if (this.startScale && mode === "scale") {
+            const fx = this.startScale.x ? (s.x / this.startScale.x) : 0;
+            const fy = this.startScale.y ? (s.y / this.startScale.y) : 0;
+            const fz = this.startScale.z ? (s.z / this.startScale.z) : 0;
+
+            extra =
+                "Factor (scale)\n" +
+                `  fx ${_fmt(fx)}  fy ${_fmt(fy)}  fz ${_fmt(fz)}\n`;
+        }
+
+        const name = obj.name || "(unnamed)";
+
+        this.el.textContent =
+            `Transform drag\n` +
+            `Object: ${name}\n` +
+            `Mode: ${mode}   Space: ${space}   Axis: ${axis}\n` +
+            `Editor Pos: ${_fmt(p.x)}  ${_fmt(p.y)}  ${_fmt(p.z)}\n` +
+            `INST   Pos: ${_fmt(inst.x)}  ${_fmt(inst.y)}  ${_fmt(inst.z)}\n` +
+            `Rot (deg):  ${_fmt(_radToDeg(r.x), 2)}  ${_fmt(_radToDeg(r.y), 2)}  ${_fmt(_radToDeg(r.z), 2)}\n` +
+            `Scale:      ${_fmt(s.x)}  ${_fmt(s.y)}  ${_fmt(s.z)}\n` +
+            extra;
+    }
+}
 
 export default class Walk {
 
@@ -21,10 +169,6 @@ export default class Walk {
         ShiftLeft: false
     };
 
-
-    // playerOnFloor = false;
-
-    // worldOctree = new Octree();
     playerCollider = new Capsule(
         new Vector3(0, 0.35, 0),
         new Vector3(0, 1, 0),
@@ -34,6 +178,13 @@ export default class Walk {
     playerVelocity = new Vector3();
     playerDirection = new Vector3();
 
+    // ------------------------------
+    // BASIC UNDO (TRANSFORMS ONLY)
+    // ------------------------------
+    undoStack = [];
+    undoMax = 50;
+    _undoStart = null; // { name, state }
+    // ------------------------------
 
     /**
      *
@@ -42,7 +193,6 @@ export default class Walk {
     constructor(sceneInfo) {
         this.sceneInfo = sceneInfo;
         this.sceneInfo.camera.rotation.order = 'YXZ';
-
 
         if (Config.outlineActiveObject){
             const renderPass = new RenderPass( sceneInfo.scene, sceneInfo.camera );
@@ -54,13 +204,17 @@ export default class Walk {
             WebGL.composer.addPass( this.outlinePass );
         }
 
-
         let _this = this;
 
         document.addEventListener('keydown', (event) => {
             _this.keyStates[event.code] = true;
-        });
 
+            // BASIC UNDO: Ctrl+Z
+            if (event.ctrlKey && (event.code === "KeyZ" || event.key === "z" || event.key === "Z")) {
+                event.preventDefault();
+                _this.undoLastTransform();
+            }
+        });
 
         document.addEventListener('keyup', (event) => {
             _this.keyStates[event.code] = false;
@@ -71,13 +225,8 @@ export default class Walk {
                 this.transform.setMode( 'translate' );
             if (event.code === 'KeyE')
                 this.transform.setMode( 'rotate' );
-
-
             if (event.code === 'KeyR')
                 this.transform.setMode( 'scale' );
-
-            // if (event.code === 'KeyH')
-            //     this.highlightModelsInRange(10);
 
             if (event.code === 'Escape') {
                 if (this.mode === "route-selection"){
@@ -85,15 +234,6 @@ export default class Walk {
                     document.exitPointerLock();
                 }
             }
-            //
-
-            //     _this.keyStates.modeSelectObject = false;
-            //     _this.setMode("fly");
-            // }
-            //
-            // if (event.code === 'KeyL') {
-            //     _this.setMode("waypoint");
-            // }
 
             if (event.code === 'KeyI') {
                 _this.keyStates.modeSelectObject = !_this.keyStates.modeSelectObject;
@@ -103,13 +243,12 @@ export default class Walk {
                     _this.setMode("fly");
             }
             if (event.code === 'KeyO') {
-
                 // console.log("cilds",sceneInfo.scene);
             }
         });
 
         WebGL.renderer.domElement.addEventListener('mousedown', () => {
-            if (this.mode === "fly" || this.mode === "transform")
+            if (this.mode === "fly")
                 document.body.requestPointerLock();
         });
 
@@ -118,14 +257,12 @@ export default class Walk {
                 sceneInfo.camera.rotation.y -= event.movementX / 500;
                 sceneInfo.camera.rotation.x -= event.movementY / 500;
             }
-
         });
 
         WebGL.renderer.domElement.addEventListener('click', function (event) {
             if (_this.keyStates.modeSelectObject && _this.mode === "select")
                 _this.doRayCast(event);
         }, true);
-
 
         this.orbit = new OrbitControls(sceneInfo.camera, WebGL.renderer.domElement);
         this.orbit.enableDamping = true;
@@ -142,22 +279,146 @@ export default class Walk {
             obj.isTransformControls = true;
         });
 
+        // HUD for dragging info
+        this._dragHud = new TransformDragHUD();
+
         this.transform.addEventListener('dragging-changed', function (event) {
             _this.orbit.enabled = !event.value;
+
+            // HUD
+            if (event.value === true) {
+                if (_this.mode === "transform") _this._dragHud.begin(_this.transform);
+            } else {
+                _this._dragHud.hide();
+            }
+
+            // UNDO: capture "before" at drag start
+            if (event.value === true) {
+                _this._beginUndoCapture();
+            }
         });
 
-        this.transform.addEventListener( 'mouseUp', function (event) {
+        // Live updates while dragging
+        this.transform.addEventListener('objectChange', function () {
+            if (_this.mode === "transform") _this._dragHud.update(_this.transform);
+        });
+
+        // Finalize transform on release + push undo item
+        this.transform.addEventListener('mouseUp', function (event) {
+            _this._dragHud.update(_this.transform);
             _this.onObjectChanged(event);
-        } );
+            _this._dragHud.hide();
+
+            // UNDO: push "before/after" as one step
+            _this._endUndoCaptureAndPush();
+        });
 
         sceneInfo.scene.add(this.transform);
 
         this.setMode('fly');
     }
 
+    // ------------------------------
+    // BASIC UNDO IMPLEMENTATION
+    // ------------------------------
+
+    _captureState(obj){
+        return {
+            position: obj.position.clone(),
+            quaternion: obj.quaternion.clone(),
+            scale: obj.scale.clone()
+        };
+    }
+
+    _sameState(a, b){
+        const eps = 1e-6;
+        const eq = (x,y) => Math.abs(x - y) <= eps;
+
+        return (
+            eq(a.position.x, b.position.x) &&
+            eq(a.position.y, b.position.y) &&
+            eq(a.position.z, b.position.z) &&
+
+            eq(a.quaternion.x, b.quaternion.x) &&
+            eq(a.quaternion.y, b.quaternion.y) &&
+            eq(a.quaternion.z, b.quaternion.z) &&
+            eq(a.quaternion.w, b.quaternion.w) &&
+
+            eq(a.scale.x, b.scale.x) &&
+            eq(a.scale.y, b.scale.y) &&
+            eq(a.scale.z, b.scale.z)
+        );
+    }
+
+    _applyState(obj, state){
+        obj.position.copy(state.position);
+        obj.quaternion.copy(state.quaternion);
+        obj.scale.copy(state.scale);
+        obj.updateMatrixWorld(true);
+
+        // keep INST in sync even if object isn't currently selected
+        const ent = obj?.userData?.entity;
+        if (ent && ent.props && ent.props.instance && typeof ent.props.instance.data === "function"){
+            const inst = ent.props.instance.data();
+            inst.position = { x: obj.position.x, y: obj.position.y, z: obj.position.z };
+            inst.rotation = { x: obj.quaternion.x, y: obj.quaternion.y, z: obj.quaternion.z, w: obj.quaternion.w };
+        }
+    }
+
+    _beginUndoCapture(){
+        if (!this.object) return;
+        if (!this.object.name) return;
+
+        this._undoStart = {
+            name: this.object.name,
+            state: this._captureState(this.object)
+        };
+    }
+
+    _endUndoCaptureAndPush(){
+        if (!this._undoStart) return;
+        if (!this.object) { this._undoStart = null; return; }
+        if (this.object.name !== this._undoStart.name) { this._undoStart = null; return; }
+
+        const after = this._captureState(this.object);
+        const before = this._undoStart.state;
+
+        this._undoStart = null;
+
+        if (this._sameState(before, after)) return;
+
+        this.undoStack.push({
+            name: this.object.name,
+            before: before,
+            after: after
+        });
+
+        if (this.undoStack.length > this.undoMax) {
+            this.undoStack.shift();
+        }
+    }
+
+    undoLastTransform(){
+        if (!this.undoStack.length) return;
+
+        const step = this.undoStack.pop();
+        const obj = this.sceneInfo?.scene ? this.sceneInfo.scene.getObjectByName(step.name) : null;
+        if (!obj) return;
+
+        this._applyState(obj, step.before);
+
+        // if this is the currently selected object, refresh orbit target and UI sync
+        if (this.object && this.object.name === step.name) {
+            this.orbit.target.copy(obj.position);
+            this.onObjectChanged();
+        }
+    }
+
+    // ------------------------------
+
     onObjectChanged(){
 
-        if (this.object.userData.entity === undefined)
+        if (!this.object || !this.object.userData || this.object.userData.entity === undefined)
             return;
 
         if (this.object.userData.entity.props.instance !== undefined){
@@ -175,10 +436,7 @@ export default class Walk {
                 z: this.object.quaternion.z,
                 w: this.object.quaternion.w
             };
-
-
         }
-
 
         this.orbit.target.copy(this.object.position);
     }
@@ -201,9 +459,6 @@ export default class Walk {
 
         _raycaster.setFromCamera(_mouse, camera);
 
-        //TODO
-        //refactor required ! Remove the "group" shit and add regular meshes ... then we can remove the recursive intersection
-
         //we want only game object, no helpers
         let childs = [];
         scene.children.forEach(function (child) {
@@ -211,7 +466,6 @@ export default class Walk {
                 childs.push(child);
         });
 
-        //we need recursive flag because the Group has the position and the children was clicked :/
         let intersects = _raycaster.intersectObjects(childs, true);
 
         let clickedGroups = [];
@@ -224,16 +478,13 @@ export default class Walk {
         });
 
         if (clickedGroups.length > 0) {
-            // console.log("RayCast Object", clickedGroups[0]);
 
             if (Config.outlineActiveObject)
                 this.outlinePass.selectedObjects = [clickedGroups[0].children[0]];
 
-            //TODO: doppeltes handling, haben das auch in der map.js focusEntry...
             this.setObject(clickedGroups[0]);
             this.setMode('transform');
             this.sceneInfo.lookAt = clickedGroups[0].userData.entity;
-
         }
     }
 
@@ -247,12 +498,8 @@ export default class Walk {
     }
 
     getSideVector() {
-        // if (this.mode === "waypoint"){
-        //     this.playerDirection = new Vector3(0, -1, 0);
-        // }else{
-            this.sceneInfo.camera.getWorldDirection(this.playerDirection);
-            this.playerDirection.y = 0;
-        // }
+        this.sceneInfo.camera.getWorldDirection(this.playerDirection);
+        this.playerDirection.y = 0;
 
         this.playerDirection.normalize();
         this.playerDirection.cross(this.sceneInfo.camera.up);
@@ -281,9 +528,7 @@ export default class Walk {
 
         if (this.keyStates['KeyE'])
             this.playerVelocity.y = -7;
-
     }
-
 
     setObject(object) {
         this.object = object;
@@ -313,15 +558,15 @@ export default class Walk {
 
             this.sceneInfo.camera.position.copy(this.playerCollider.end);
 
-
         } else if (this.mode === "transform") {
             this.orbit.update(delta);
+
+            if (this._dragHud && this._dragHud.active) {
+                this._dragHud.update(this.transform);
+            }
         }
-
-
     }
 
-    //todo https://threejs.org/examples/?q=out#webgl_postprocessing_outline
     highlightModelsInRange(range){
         let studioSceneInfo = StudioScene.getStudioSceneInfo();
 
@@ -329,10 +574,6 @@ export default class Walk {
 
         let _this = this;
         scene.children.forEach(
-            /**
-             *
-             * @param child {Mesh}
-             */
             function (child) {
                 let dist = child.position.distanceTo(_this.playerCollider.end);
                 if (dist <= range){
@@ -340,23 +581,20 @@ export default class Walk {
                     child.children[0].material.forEach(function (material) {
                         material.wireframe = true;
                         material.needsUpdate = true;
-                    })
-
+                    });
                 }
-                // console.log(child.name, dist);
             }
         );
-
     }
 
     setMode(mode) {
-
-        // console.log("current mode", this.mode, "new mode", mode);
 
         if (this.mode === "transform" && mode !== "transform") {
             Studio.menu.getById('edit-copy').disable();
             this.transform.detach();
             this.orbit.enabled = false;
+
+            if (this._dragHud) this._dragHud.hide();
 
             if (mode === "fly"){
                 this.playerCollider.end.copy( this.orbit.object.position );
@@ -372,7 +610,7 @@ export default class Walk {
             if (Config.outlineActiveObject)
                 this.outlinePass.selectedObjects = [];
 
-        }else if (mode === "transform") {
+        } else if (mode === "transform") {
             this.orbit.enabled = true;
             this.keyStates.modeSelectObject = true;
         }
