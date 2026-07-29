@@ -81,6 +81,12 @@ export default class SceneMap extends SceneAbstract {
         const instData = (inst && typeof inst.data === "function") ? inst.data() : null;
         if (!instData) return;
 
+        // Keep the INST result wired to the exact displayed object. This makes
+        // placeholder and normal-model exports use the edited viewport pose
+        // without a fragile name-based scene lookup.
+        if (inst.entity)
+            inst.entity.mesh = mesh;
+
         if (instData.position) {
             mesh.position.set(instData.position.x, instData.position.y, instData.position.z);
         }

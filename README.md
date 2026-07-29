@@ -1,17 +1,14 @@
 # Manhunt Studio
->A free and open source toolkit by Sor3nt to quickly modify Rockstar`s game Manhunt.
->This forked version is focused on Manhunt 2 maintained by Hellwire.
+>A free and open source toolkit to quickly modify Rockstar`s game Manhunt.
+
+## Live Editor
+https://www.dixmor-hospital.com/mhs/index.php
 
 ## Local Installation
-You need php 8.2! and latest chrome or firefox
+
 ```
-Windows:
-Run -> startserver.cmd
-open -> Manhunt Studio Webpage.lnk
-
-Linux / OSX:
-
-cd to folder using terminal
-run
+git clone https://github.com/Sor3nt/manhunt-studio.git
+cd manhunt-studio
+npm install
 php -S localhost:8080
 ```

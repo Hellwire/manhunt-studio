@@ -5,6 +5,12 @@ import Result from "../../Result.js";
 import NBinary from "../../../../NBinary.js";
 import Studio from "../../../../Studio.js";
 import Games from "../../../../Plugin/Games.js";
+import {
+    editorToFilePosition,
+    editorToFileRotation,
+    fileToEditorPosition,
+    fileToEditorRotation
+} from "../../../InstTransform.js";
 
 export default class Inst extends AbstractLoader {
     static name = "INST (Manhunt 1/2)";
@@ -108,18 +114,20 @@ export default class Inst extends AbstractLoader {
             binary.getString(0, true); //skip internalName
 
             if (entry.changes.position !== undefined) {
-                binary.setFloat32(entry.changes.position.x);
-                binary.setFloat32(entry.changes.position.z * -1);
-                binary.setFloat32(entry.changes.position.y);
+                const position = editorToFilePosition(entry.changes.position);
+                binary.setFloat32(position.x);
+                binary.setFloat32(position.y);
+                binary.setFloat32(position.z);
             } else {
                 binary.seek(12);
             }
 
             if (entry.changes.rotation !== undefined) {
-				binary.setFloat32(entry.changes.rotation.x);
-				binary.setFloat32(-entry.changes.rotation.z);
-				binary.setFloat32(entry.changes.rotation.y);
-				binary.setFloat32(entry.changes.rotation.w);
+                const rotation = editorToFileRotation(entry.changes.rotation);
+				binary.setFloat32(rotation.x);
+				binary.setFloat32(rotation.y);
+				binary.setFloat32(rotation.z);
+				binary.setFloat32(rotation.w);
             }
         }
 
@@ -178,17 +186,9 @@ export default class Inst extends AbstractLoader {
 
             try {
                 // Position (XYZ) + rotation (XYZW) then entityClass string (MH1/MH2 layout)
-                let previewPos = binary.readXYZ();
-                let posZ = previewPos.z;
-                previewPos.z = previewPos.y * -1;
-                previewPos.y = posZ;
+                let previewPos = fileToEditorPosition(binary.readXYZ());
 
-				let previewRot = binary.readXYZW();
-
-				// MH2 -> Editor basis change (x, y, z) = (x, z, -y)
-				let oldYq = previewRot.y;
-				previewRot.y = previewRot.z;
-				previewRot.z = -oldYq;
+				let previewRot = fileToEditorRotation(binary.readXYZW());
 
                 let previewEntityClass = binary.getString(0, true);
 
@@ -266,18 +266,8 @@ export default class Inst extends AbstractLoader {
         let glgRecord = binary.getString(0, true);
         let internalName = binary.getString(0, true);
 
-        let position = binary.readXYZ();
-
-        let posZ = position.z;
-        position.z = position.y * -1;
-        position.y = posZ;
-
-		let rotation = binary.readXYZW();
-
-		// MH2 -> Editor basis change (x, y, z) = (x, z, -y)
-		let oldY = rotation.y;
-		rotation.y = rotation.z;
-		rotation.z = -oldY;
+        let position = fileToEditorPosition(binary.readXYZ());
+		let rotation = fileToEditorRotation(binary.readXYZW());
 
         let entityClass = binary.getString(0, true);
 

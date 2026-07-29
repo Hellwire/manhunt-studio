@@ -126,15 +126,15 @@ export default class Node{
      */
     removeRelation(node){
         let relNode = this.children[node.getId()];
-        if (relNode === undefined) return;
-
-        let mesh = this.getMesh();
-        let scene = mesh.parent;
-        if (scene !== null)
-            scene.remove(relNode.line);
+        if (relNode !== undefined){
+            let mesh = this.getMesh();
+            let scene = mesh.parent;
+            if (scene !== null)
+                scene.remove(relNode.line);
+        }
 
         this.entity.props.waypoints = this.entity.props.waypoints.filter(function (waypoint) {
-            return !(waypoint.linkId === relNode.node.getId());
+            return String(waypoint.linkId) !== String(node.getId());
         });
 
         delete this.children[node.getId()];

@@ -464,21 +464,27 @@ export default class Studio {
                     Status.show("Prepare Files...");
                     Studio.menu.closeAll();
 
-                    window.setTimeout(function () {
-                        let game = Games.getGame(studioScene.mapEntry.gameId);
-                        let level = studioScene.mapEntry.level;
+                    window.setTimeout(async function () {
+                        try {
+                            let game = Games.getGame(studioScene.mapEntry.gameId);
+                            let level = studioScene.mapEntry.level;
 
-                        let files = [];
+                            let files = [];
 
-                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'entity.inst' : 'entity_pc.inst', binary: Inst.build(game, level, false) });
-                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'pak/modelspc.dff' : 'modelspc.mdl', binary: Dff.build(game, level) });
-                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'pak/modelspc.txd' : 'modelspc.tex', binary: Txd.build(game, level) });
-                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'entityTypeData.ini' : 'resource3.glg', binary: Glg.build(game, level) });
-                        files.push({ name: game.game === Games.GAMES.MANHUNT ? 'collisions.col' : 'collisions_pc.col', binary: Col.build(game, level) });
-                        // files.push({ name: game.game === Games.GAMES.MANHUNT ? 'mapAI.grf'      : 'mapai_pc.grf', binary: Grf.build(game, level)});
+                            files.push({ name: game.game === Games.GAMES.MANHUNT ? 'entity.inst' : 'entity_pc.inst', binary: Inst.build(game, level, false) });
+                            files.push({ name: game.game === Games.GAMES.MANHUNT ? 'pak/modelspc.dff' : 'modelspc.mdl', binary: Dff.build(game, level) });
+                            files.push({ name: game.game === Games.GAMES.MANHUNT ? 'pak/modelspc.txd' : 'modelspc.tex', binary: Txd.build(game, level) });
+                            files.push({ name: game.game === Games.GAMES.MANHUNT ? 'entityTypeData.ini' : 'resource3.glg', binary: Glg.build(game, level) });
+                            files.push({ name: game.game === Games.GAMES.MANHUNT ? 'collisions.col' : 'collisions_pc.col', binary: Col.build(game, level) });
+                            files.push({ name: game.game === Games.GAMES.MANHUNT ? 'mapAI.grf' : 'mapai_pc.grf', binary: Grf.build(game, level) });
 
-                        Save.outputZip(files);
-                        Status.hide();
+                            await Save.outputZip(files);
+                        } catch (error) {
+                            console.error("Unable to export level", error);
+                            alert(`Unable to export level:\n${error.message || error}`);
+                        } finally {
+                            Status.hide();
+                        }
                     }, 100);
 
                 }
@@ -493,7 +499,7 @@ export default class Studio {
 
                 catExport.addType(new ActionType({
                     id: 'save-waypoint',
-                    label: 'mapAI.grf (Waypoint)',
+                    label: 'MapAI waypoints (.grf)',
                     // enabled: false,
                     callback: function (states) {
 
@@ -502,9 +508,15 @@ export default class Studio {
                             let game = Games.getGame(studioScene.mapEntry.gameId);
                             let level = studioScene.mapEntry.level;
 
-                            let binary = Grf.build(game, level);
-                            Save.output(binary, 'mapAI.grf');
-                            Studio.menu.closeAll();
+                            try {
+                                let binary = Grf.build(game, level);
+                                let filename = game.game === Games.GAMES.MANHUNT ? 'mapAI.grf' : 'mapai_pc.grf';
+                                Save.output(binary, filename);
+                                Studio.menu.closeAll();
+                            } catch (error) {
+                                console.error("Unable to export MapAI GRF", error);
+                                alert(`Unable to export MapAI GRF:\n${error.message || error}`);
+                            }
                         }
 
                     }
@@ -761,6 +773,10 @@ export default class Studio {
                     Studio.menu.getById('waypoint-show-routes').triggerClick();
                     Studio.menu.getById('waypoint-routes').enable();
                     Studio.menu.getById('waypoint-areas').enable();
+                    Studio.menu.getById('waypoint-create-node').enable();
+                    Studio.menu.getById('waypoint-link-node').enable();
+                    Studio.menu.getById('waypoint-unlink-node').enable();
+                    Studio.menu.getById('waypoint-unlink-all').enable();
                     Studio.menu.getById('waypoint-clear').enable();
 
                 }
@@ -814,6 +830,105 @@ export default class Studio {
                     studioScene.waypoints.routeVisible(states.active);
                     studioScene.waypoints.routeHighlight(states.active);
                 }
+            }
+        }));
+
+        const prepareWaypointSelection = function (studioSceneInfo) {
+            let showNodesType = Studio.menu.getById('waypoint-show-nodes');
+            if (showNodesType.states.active === false)
+                showNodesType.triggerClick();
+
+            let control = studioSceneInfo.control;
+            control.setMode('route-selection');
+        };
+
+        catWaypoint.addType(new ActionType({
+            id: 'waypoint-create-node',
+            label: 'Create node (link selected)',
+            enabled: false,
+            callback: function () {
+                let studioSceneInfo = StudioScene.getStudioSceneInfo();
+                if (studioSceneInfo === null || !(studioSceneInfo.studioScene instanceof SceneMap))
+                    return;
+
+                let waypoints = studioSceneInfo.studioScene.waypoints;
+                let showNodesType = Studio.menu.getById('waypoint-show-nodes');
+                if (showNodesType.states.active === false)
+                    showNodesType.triggerClick();
+
+                if (!waypoints.placeNodeFromSelection())
+                    return;
+
+                if (studioSceneInfo.control.mode !== 'fly')
+                    studioSceneInfo.control.setMode('fly');
+                document.body.requestPointerLock();
+                Studio.menu.closeAll();
+            }
+        }));
+
+        catWaypoint.addType(new ActionType({
+            id: 'waypoint-link-node',
+            label: 'Link selected node...',
+            enabled: false,
+            callback: function () {
+                let studioSceneInfo = StudioScene.getStudioSceneInfo();
+                if (studioSceneInfo === null || !(studioSceneInfo.studioScene instanceof SceneMap))
+                    return;
+
+                let waypoints = studioSceneInfo.studioScene.waypoints;
+                let selectedNode = waypoints.getSelectedNode();
+                if (selectedNode === false){
+                    alert('Select a waypoint node first.');
+                    return;
+                }
+
+                prepareWaypointSelection(studioSceneInfo);
+                waypoints.relationSelection(selectedNode, 'link');
+                Studio.menu.closeAll();
+            }
+        }));
+
+        catWaypoint.addType(new ActionType({
+            id: 'waypoint-unlink-node',
+            label: 'Unlink selected node...',
+            enabled: false,
+            callback: function () {
+                let studioSceneInfo = StudioScene.getStudioSceneInfo();
+                if (studioSceneInfo === null || !(studioSceneInfo.studioScene instanceof SceneMap))
+                    return;
+
+                let waypoints = studioSceneInfo.studioScene.waypoints;
+                let selectedNode = waypoints.getSelectedNode();
+                if (selectedNode === false){
+                    alert('Select a waypoint node first.');
+                    return;
+                }
+
+                prepareWaypointSelection(studioSceneInfo);
+                waypoints.relationSelection(selectedNode, 'unlink');
+                Studio.menu.closeAll();
+            }
+        }));
+
+        catWaypoint.addType(new ActionType({
+            id: 'waypoint-unlink-all',
+            label: 'Unlink all from selected',
+            enabled: false,
+            callback: function () {
+                let studioSceneInfo = StudioScene.getStudioSceneInfo();
+                if (studioSceneInfo === null || !(studioSceneInfo.studioScene instanceof SceneMap))
+                    return;
+
+                let waypoints = studioSceneInfo.studioScene.waypoints;
+                let selectedNode = waypoints.getSelectedNode();
+                if (selectedNode === false){
+                    alert('Select a waypoint node first.');
+                    return;
+                }
+
+                if (confirm(`Unlink node ${selectedNode.getId()} from every connected node?`))
+                    waypoints.disconnectAll(selectedNode);
+                Studio.menu.closeAll();
             }
         }));
 
@@ -921,8 +1036,8 @@ export default class Studio {
 
                                 game.removeFromStorage(entity);
 
-                                route.setVisible(false);
                                 route.highlight(false);
+                                route.remove();
 
                                 waypoints.routes.splice(waypoints.routes.indexOf(route), 1);
 
@@ -933,7 +1048,7 @@ export default class Studio {
 
                         catWaypointRouteEntry.addType(new ActionType({
                             id: 'waypoint-route-route-' + route.name,
-                            label: 'Edit',
+                            label: 'Edit path (click nodes to toggle)',
                             callback: function (states) {
                                 waypoints.routeVisible(false);
                                 waypoints.routeHighlight(false);
@@ -953,9 +1068,12 @@ export default class Studio {
                         }));
 
                         catWaypointRouteEntry.addType(new ActionType({
-                            id: 'waypoint-route-route-' + route.name,
+                            id: 'waypoint-route-clear-' + route.name,
                             label: 'Clear',
                             callback: function (states) {
+
+                                if (!confirm(`Clear every node from route ${route.name}?`))
+                                    return;
 
                                 route.highlight(false);
                                 route.clear();
@@ -1037,7 +1155,7 @@ export default class Studio {
 
                             catWaypointAreaEntry.addType(new ActionType({
                                 id: 'waypoint-area-node-' + area.name,
-                                label: 'Add node',
+                                label: 'Create node (link selected)',
                                 callback: function (states) {
 
                                     let showNodesType = Studio.menu.getById('waypoint-show-nodes');
@@ -1046,7 +1164,12 @@ export default class Studio {
                                     }
 
                                     requestAnimationFrame(function () {
-                                        waypoints.placeNewNode(area.name);
+                                        let selectedNode = waypoints.getSelectedNode();
+                                        let anchorNode = selectedNode !== false &&
+                                            waypoints.getAreaForNode(selectedNode) === area
+                                            ? selectedNode
+                                            : null;
+                                        waypoints.placeNewNode(area.name, {anchorNode: anchorNode});
                                         document.body.requestPointerLock();
                                     });
 
@@ -1113,7 +1236,7 @@ export default class Studio {
                                     let studioScene = studioSceneInfo.studioScene;
                                     if (studioScene instanceof SceneMap) {
 
-                                        area.clear();
+                                        waypoints.clear(area.name);
                                         waypoints.children.splice(waypoints.children.indexOf(area), 1);
                                     }
 

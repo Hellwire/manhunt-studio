@@ -56,6 +56,7 @@ export default class Entity{
 
                 let instData = this.inst.data();
                 this.setPosition(instData.position.x,instData.position.y,instData.position.z);
+                this.setRotation(instData.rotation.x,instData.rotation.y,instData.rotation.z,instData.rotation.w);
 
                 break;
 

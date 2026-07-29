@@ -34,6 +34,8 @@ export default class Placing{
     };
 
     nextNodeId = 0;
+    isActive = true;
+    isMouseClickRegistered = false;
 
     /**
      *
@@ -64,6 +66,7 @@ export default class Placing{
         this.binding.keyUpEsc = this.onKeyUpEsc.bind(this);
 
         Mouse.onMouseMove(this.binding.mouseMove);
+        document.addEventListener('pointerlockchange', this.binding.keyUpEsc, false);
 
         /**
          * We need to delay the registration a little bit
@@ -71,18 +74,26 @@ export default class Placing{
          */
         let _this = this;
         setTimeout(function () {
-            document.addEventListener('pointerlockchange', _this.binding.keyUpEsc, false);
+            if (!_this.isActive) return;
             Mouse.onMouseClick(_this.binding.mouseClick);
+            _this.isMouseClickRegistered = true;
         }, 500);
     }
 
     unbind(){
-        Mouse.removeOnMouseClick(this.binding.mouseClick);
+        if (!this.isActive) return;
+        this.isActive = false;
+
+        if (this.isMouseClickRegistered)
+            Mouse.removeOnMouseClick(this.binding.mouseClick);
         Mouse.removeOnMouseMove(this.binding.mouseMove);
         document.removeEventListener('pointerlockchange', this.binding.keyUpEsc);
     }
 
     onKeyUpEsc(){
+        if (document.pointerLockElement === document.body)
+            return;
+
         this.unbind();
         this.sceneInfo.scene.remove(this.node.getMesh());
         this.onPlaceCallback(null);

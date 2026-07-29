@@ -598,9 +598,10 @@ export default class Walk {
 
             if (mode === "fly"){
                 this.playerCollider.end.copy( this.orbit.object.position );
+                document.body.requestPointerLock();
+            }else{
+                document.exitPointerLock();
             }
-
-            document.body.requestPointerLock();
         } else if (this.mode === "fly" &&  mode !== "fly") {
             document.exitPointerLock();
         }

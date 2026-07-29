@@ -6,6 +6,7 @@ import Route from "./Waypoints/Route.js";
 import Placing from "./Waypoints/Placing.js";
 import NodeGenerator from "./Waypoints/NodeGenerator.js";
 import RouteSelection from "./Waypoints/RouteSelection.js";
+import RelationSelection from "./Waypoints/RelationSelection.js";
 import {Vector3, Raycaster} from "./Vendor/three.module.js";
 import StopperPlacing from "./Waypoints/StopperPlacing.js";
 import Result from "./Plugin/Loader/Result.js";
@@ -63,6 +64,10 @@ export default class Waypoints{
      */
     meshesForRaycast = [];
 
+    nodesAreVisible = true;
+    relationsAreVisible = true;
+    routesAreVisible = true;
+
     /**
      *
      * @param sceneMap {SceneMap}
@@ -116,12 +121,14 @@ export default class Waypoints{
     }
 
     nodeVisible(state){
+        this.nodesAreVisible = state;
         this.children.forEach(function (area) {
             area.setNodeVisible(state);
         });
     }
 
     lineVisible(state){
+        this.relationsAreVisible = state;
         this.children.forEach(function (area) {
             area.setLinesVisible(state);
         });
@@ -129,6 +136,7 @@ export default class Waypoints{
 
 
     routeVisible(state){
+        this.routesAreVisible = state;
         this.routes.forEach(function (route) {
             route.setVisible(state);
         });
@@ -166,32 +174,26 @@ export default class Waypoints{
                 area.clear();
             });
 
+            let _this = this;
             this.routes.forEach(function (route) {
                 route.remove();
+                if (route.entity)
+                    _this.game.removeFromStorage(route.entity);
             });
 
+            this.children = [];
             this.routes = [];
 
             this.nextNodeId = 0;
 
             this.nodeByNodeId = {};
         }else{
-            let _this = this;
             let area = this.getAreaByName(areaName);
+            if (area === false) return;
 
-            this.routes = this.routes.filter(function (route) {
-                let nodeInArea = route.isRouteNodeInArea(area);
-                if (nodeInArea)
-                    route.remove();
-
-                return !nodeInArea;
+            [...area.children].forEach(node => {
+                this.removeNode(node);
             });
-
-            area.children.forEach(function (node) {
-                delete _this.nodeByNodeId[node.getId()];
-            });
-
-            area.clear();
 
         }
 
@@ -209,6 +211,169 @@ export default class Waypoints{
             onPlaceCallback: function (route) {
 
             }
+        });
+    }
+
+    /**
+     * Resolve a waypoint node from a Result, a waypoint mesh, or one of its
+     * child meshes.
+     *
+     * @param object {Object3D|Result|null}
+     * @returns {boolean|Node}
+     */
+    getNode(object){
+        if (!object) return false;
+
+        let entity = object;
+        if (object.userData !== undefined || object.parent !== undefined){
+            entity = null;
+            let current = object;
+            while (current !== null && current !== undefined){
+                if (current.userData && current.userData.entity){
+                    entity = current.userData.entity;
+                    break;
+                }
+                current = current.parent;
+            }
+        }
+
+        if (!entity || entity.type !== Studio.AREA_LOCATION || !entity.props)
+            return false;
+
+        let node = this.nodeByNodeId[entity.props.id];
+        if (node !== undefined)
+            return node;
+
+        const wantedId = String(entity.props.id);
+        for (let id in this.nodeByNodeId){
+            if (!this.nodeByNodeId.hasOwnProperty(id)) continue;
+            if (String(id) === wantedId || this.nodeByNodeId[id].entity === entity)
+                return this.nodeByNodeId[id];
+        }
+
+        return false;
+    }
+
+    /**
+     * @returns {boolean|Node}
+     */
+    getSelectedNode(){
+        if (!this.sceneMap || !this.sceneMap.sceneInfo || !this.sceneMap.sceneInfo.control)
+            return false;
+
+        const control = this.sceneMap.sceneInfo.control;
+        if (control.mode !== "transform")
+            return false;
+
+        return this.getNode(control.object);
+    }
+
+    /**
+     * @param node {Node}
+     * @returns {boolean|Area}
+     */
+    getAreaForNode(node){
+        let found = false;
+        this.children.forEach(function (area) {
+            if (area.children.indexOf(node) !== -1)
+                found = area;
+        });
+        return found;
+    }
+
+    /**
+     * Create a direct, serializable relation. Manual links intentionally do
+     * not use the distance/visibility restrictions of automatic generation.
+     *
+     * @param nodeA {Node}
+     * @param nodeB {Node}
+     * @param bidirectional {boolean}
+     * @param type {number}
+     * @returns {boolean}
+     */
+    connectNodes(nodeA, nodeB, bidirectional = true, type = 3){
+        if (!nodeA || !nodeB || nodeA === nodeB)
+            return false;
+
+        const connectOneWay = function (source, target) {
+            if (!Array.isArray(source.entity.props.waypoints))
+                source.entity.props.waypoints = [];
+
+            const targetId = target.getId();
+            const exists = source.entity.props.waypoints.some(function (waypoint) {
+                return String(waypoint.linkId) === String(targetId);
+            });
+
+            if (!exists){
+                source.entity.props.waypoints.push({
+                    linkId: targetId,
+                    type: type,
+                    relation: []
+                });
+            }
+
+            source.addRelation(target);
+        };
+
+        connectOneWay(nodeA, nodeB);
+        if (bidirectional)
+            connectOneWay(nodeB, nodeA);
+
+        nodeA.relationsVisible(this.relationsAreVisible);
+        nodeB.relationsVisible(this.relationsAreVisible);
+        return true;
+    }
+
+    /**
+     * @param nodeA {Node}
+     * @param nodeB {Node}
+     * @param bidirectional {boolean}
+     * @returns {boolean}
+     */
+    disconnectNodes(nodeA, nodeB, bidirectional = true){
+        if (!nodeA || !nodeB || nodeA === nodeB)
+            return false;
+
+        nodeA.removeRelation(nodeB);
+        if (bidirectional)
+            nodeB.removeRelation(nodeA);
+
+        return true;
+    }
+
+    /**
+     * Remove every incoming and outgoing relation for a node.
+     *
+     * @param node {Node}
+     */
+    disconnectAll(node){
+        if (!node) return;
+
+        let _this = this;
+        this.children.forEach(function (area) {
+            area.children.forEach(function (otherNode) {
+                if (otherNode !== node)
+                    _this.disconnectNodes(node, otherNode, true);
+            });
+        });
+    }
+
+    /**
+     * Start a one-shot "click another node" link/unlink operation.
+     *
+     * @param source {Node}
+     * @param action {"link"|"unlink"}
+     * @param callback {function|undefined}
+     */
+    relationSelection(source, action, callback){
+        if (!source) return;
+
+        new RelationSelection({
+            sceneInfo: this.sceneMap.sceneInfo,
+            waypoints: this,
+            source: source,
+            action: action,
+            onComplete: callback
         });
     }
 
@@ -251,17 +416,48 @@ export default class Waypoints{
             return;
         }
 
-        let node = this.nodeByNodeId[id];
-        let area = this.getCreateArea(node.entity.props.areaName);
-        area.removeNode(node);
-
-        delete this.nodeByNodeId[id];
-
+        this.removeNode(this.nodeByNodeId[id]);
     }
 
-    placeNewNode(areaName){
+    /**
+     * Remove a node without leaving dangling links or route entries behind.
+     *
+     * @param node {Node}
+     */
+    removeNode(node){
+        if (!node) return;
+
+        this.routes.forEach(function (route) {
+            route.removeNode(node);
+        });
+
+        this.disconnectAll(node);
+
+        let area = false;
+        this.children.forEach(function (candidate) {
+            if (candidate.children.indexOf(node) !== -1)
+                area = candidate;
+        });
+
+        if (area !== false)
+            area.removeNode(node);
+        else
+            node.remove();
+
+        delete this.nodeByNodeId[node.getId()];
+    }
+
+    placeNewNode(areaName, options = {}){
 
         let _this = this;
+        const anchorNode = options.anchorNode || null;
+        const autoNearby = options.autoNearby === true;
+        const continuous = options.continuous === true;
+        const selectAfterPlace = options.selectAfterPlace !== false;
+        const control = this.sceneMap.sceneInfo.control;
+
+        if (control.mode !== 'fly')
+            control.setMode('fly');
 
         new Placing({
             sceneInfo: this.sceneMap.sceneInfo,
@@ -275,21 +471,66 @@ export default class Waypoints{
 
                 let area = _this.getCreateArea(areaName);
                 area.addNode(areaNode);
+                areaNode.getMesh().visible = _this.nodesAreVisible;
 
                 areaNode.entity.level = _this.level;
                 _this.game.addToStorage(areaNode.entity);
 
-                _this.generateNearByRelation(areaNode);
-                _this.createNodeRelations(area);
+                if (anchorNode)
+                    _this.connectNodes(anchorNode, areaNode, true);
+                else if (autoNearby)
+                    _this.generateNearByRelation(areaNode);
 
                 _this.nextNodeId++;
 
-                _this.placeNewNode(areaName);
+                if (typeof options.onPlaced === "function")
+                    options.onPlaced(areaNode);
+
+                if (continuous){
+                    _this.placeNewNode(areaName, options);
+                }else if (selectAfterPlace){
+                    control.setMode('transform');
+                    control.setObject(areaNode.getMesh());
+                    document.exitPointerLock();
+                }
 
                 // _this.meshesForRaycast.push(areaNode.getMesh().children[0]);
 
             }
         });
+    }
+
+    /**
+     * Place one node. If a waypoint is selected, use its area and link the new
+     * node directly to it. With no waypoint selected, ask for the target area
+     * and create an unlinked node.
+     *
+     * @param requestedAreaName {string|null}
+     * @returns {boolean}
+     */
+    placeNodeFromSelection(requestedAreaName = null){
+        const selectedNode = this.getSelectedNode();
+        let areaName = requestedAreaName;
+
+        if (selectedNode){
+            const selectedArea = this.getAreaForNode(selectedNode);
+            if (selectedArea !== false)
+                areaName = selectedArea.name;
+        }
+
+        if (areaName === null || areaName === undefined || areaName === ""){
+            const defaultArea = this.children.length > 0 ? this.children[0].name : "area1";
+            areaName = prompt("Area for new waypoint node", defaultArea);
+        }
+
+        if (areaName === null || String(areaName).trim() === "")
+            return false;
+
+        this.placeNewNode(String(areaName).trim(), {
+            anchorNode: selectedNode || null
+        });
+
+        return true;
     }
 
     placeStopper(){
@@ -467,11 +708,10 @@ export default class Waypoints{
                 return false;
 
             //create relation
-            nodeA.props.waypoints.push({
-                linkId: nodeB.props.id,
-                type: 3,
-                relation: []
-            });
+            let sourceNode = this.getNode(nodeA);
+            let targetNode = this.getNode(nodeB);
+            if (sourceNode !== false && targetNode !== false)
+                this.connectNodes(sourceNode, targetNode, false);
 
             return true;
         }
@@ -501,12 +741,9 @@ export default class Waypoints{
 
             //relation {waypointOuter} to {node} was created
             if (status === true){
-                //create reverse relation
-                node.entity.props.waypoints.push({
-                    linkId: waypointOuter.props.id,
-                    type: 3,
-                    relation: []
-                });
+                let waypointNode = _this.getNode(waypointOuter);
+                if (waypointNode !== false)
+                    _this.connectNodes(node, waypointNode, false);
             }
         });
 

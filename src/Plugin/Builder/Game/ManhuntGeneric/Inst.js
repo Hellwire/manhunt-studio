@@ -4,6 +4,10 @@ import NBinary from "../../../../NBinary.js";
 import Studio from "../../../../Studio.js";
 import Games from "../../../../Plugin/Games.js";
 import StudioScene from "../../../../Scene/StudioScene.js";
+import {
+    editorToFilePosition,
+    editorToFileRotation
+} from "../../../InstTransform.js";
 
 export default class Inst extends AbstractBuilder{
     static name = "Waypoints (Manhunt 1/2)";
@@ -182,16 +186,18 @@ export default class Inst extends AbstractBuilder{
             entry.writeString(internalName, 0x00, true, 0x70);
 
             const { position, rotation } = Inst._resolveTransform(instEntry, instData);
+            const storedPosition = editorToFilePosition(position);
+            const storedRotation = editorToFileRotation(rotation);
 
             // editor(three) -> inst(file)
-            entry.setFloat32(position.x);
-            entry.setFloat32(position.z * -1);
-            entry.setFloat32(position.y);
+            entry.setFloat32(storedPosition.x);
+            entry.setFloat32(storedPosition.y);
+            entry.setFloat32(storedPosition.z);
 
-            entry.setFloat32(rotation.x);
-            entry.setFloat32(rotation.z * -1);
-            entry.setFloat32(rotation.y * -1);
-            entry.setFloat32(rotation.w);
+            entry.setFloat32(storedRotation.x);
+            entry.setFloat32(storedRotation.y);
+            entry.setFloat32(storedRotation.z);
+            entry.setFloat32(storedRotation.w);
 
             if (instData.entityClass){
                 entry.writeString(instData.entityClass, 0x00, true, 0x70);

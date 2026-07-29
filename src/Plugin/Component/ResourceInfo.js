@@ -7,6 +7,11 @@ import Games from "../../Plugin/Games.js";
 import StudioScene from "../../Scene/StudioScene.js";
 import Result from "../Loader/Result.js";
 import SceneMap from "../../Scene/SceneMap.js";
+import {
+    editorToFilePosition,
+    editorToFileRotation,
+    fileToEditorPosition
+} from "../InstTransform.js";
 
 export default class ResourceInfo extends AbstractComponent{
 
@@ -33,19 +38,11 @@ export default class ResourceInfo extends AbstractComponent{
     // instY = -editorZ
     // instZ = editorY
     static editorPosToInst(pos){
-        return {
-            x: pos.x,
-            y: -pos.z,
-            z: pos.y
-        };
+        return editorToFilePosition(pos);
     }
 
     static instToEditorPos(inst){
-        return {
-            x: inst.x,
-            y: inst.z,
-            z: -inst.y
-        };
+        return fileToEditorPosition(inst);
     }
 
     /**
@@ -85,13 +82,8 @@ export default class ResourceInfo extends AbstractComponent{
                 });
 
                 result.push({
-                    label: 'Node Id',
-                    value: `<input value="${entry.props.id}" />`,
-                    postprocess: function ( element ) {
-                        element.find('input').keyup(function (e) {
-                            entry.props.id = jQuery(e.target).val();
-                        });
-                    }
+                    label: 'Node ID',
+                    value: `<input value="${entry.props.id}" readonly title="MapAI links use this stable editor ID. IDs are remapped automatically on export." />`
                 });
 
                 result.push({
@@ -116,17 +108,103 @@ export default class ResourceInfo extends AbstractComponent{
                     }
                 });
 
+                {
+                    let studioSceneInfo = StudioScene.getStudioSceneInfo();
+                    let studioScene = studioSceneInfo ? studioSceneInfo.studioScene : null;
+                    let waypoints = studioScene instanceof SceneMap ? studioScene.waypoints : null;
+                    let node = waypoints ? waypoints.getNode(entry) : false;
+
+                    if (node !== false){
+                        let area = waypoints.getAreaForNode(node);
+
+                        result.push({
+                            label: 'Area',
+                            value: `<span>${area !== false ? area.name : entry.props.areaName}</span>`
+                        });
+
+                        result.push({
+                            label: 'Create',
+                            value: `<span>Create linked node</span>`,
+                            onClick: function () {
+                                let control = studioSceneInfo.control;
+                                if (control.mode !== 'fly')
+                                    control.setMode('fly');
+
+                                waypoints.placeNewNode(
+                                    area !== false ? area.name : entry.props.areaName,
+                                    {anchorNode: node}
+                                );
+                                document.body.requestPointerLock();
+                            }
+                        });
+
+                        const selectRelationTarget = function (action) {
+                            let control = studioSceneInfo.control;
+                            control.setMode('route-selection');
+                            waypoints.relationSelection(node, action, function () {
+                                _this.setEntry(entry);
+                            });
+                        };
+
+                        result.push({
+                            label: 'Paths',
+                            value: `<span>Link another node...</span>`,
+                            onClick: function () {
+                                selectRelationTarget('link');
+                            }
+                        });
+
+                        result.push({
+                            label: 'Paths',
+                            value: `<span>Unlink another node...</span>`,
+                            onClick: function () {
+                                selectRelationTarget('unlink');
+                            }
+                        });
+
+                        let linkedNodes = [];
+                        (entry.props.waypoints || []).forEach(function (waypoint) {
+                            let linked = waypoints.nodeByNodeId[waypoint.linkId];
+                            if (linked !== undefined && linkedNodes.indexOf(linked) === -1)
+                                linkedNodes.push(linked);
+                        });
+
+                        linkedNodes.forEach(function (linkedNode) {
+                            const displayName = linkedNode.entity.props.nodeName || linkedNode.name || `Node ${linkedNode.getId()}`;
+                            result.push({
+                                label: 'Linked to',
+                                value: `<span>Unlink ${displayName} (#${linkedNode.getId()})</span>`,
+                                onClick: function () {
+                                    waypoints.disconnectNodes(node, linkedNode, true);
+                                    _this.setEntry(entry);
+                                }
+                            });
+                        });
+
+                        if (linkedNodes.length > 0){
+                            result.push({
+                                label: 'Paths',
+                                value: `<span>Unlink all (${linkedNodes.length})</span>`,
+                                onClick: function () {
+                                    if (!confirm(`Unlink node ${node.getId()} from every connected node?`))
+                                        return;
+                                    waypoints.disconnectAll(node);
+                                    _this.setEntry(entry);
+                                }
+                            });
+                        }
+                    }
+                }
+
                 result.push({
                     label: '&nbsp;',
                     value: `<span>Remove</span>`,
                     onClick: function () {
+                        if (!confirm(`Delete waypoint node ${entry.props.id}?`))
+                            return;
+
                         let studioScene = StudioScene.getStudioSceneInfo().studioScene;
                         if (studioScene instanceof SceneMap){
-
-                            if (entry.props.waypoints.length === 0){
-                                alert("BUG: Unable to remove node without waypoint waypoint relations");
-                                return;
-                            }
 
                             studioScene.waypoints.removeNodeId(entry.props.id);
 
@@ -259,16 +337,18 @@ export default class ResourceInfo extends AbstractComponent{
                     }
                 });
 
+                const instRotation = editorToFileRotation(object.quaternion);
                 result.push({
                     label: 'Rotation',
-                    value: `<span class="badge badge-secondary">x</span>:${object.rotation.x.toFixed(2)} <span class="badge badge-secondary">y</span>:${object.rotation.y.toFixed(2)} <span class="badge badge-secondary">z</span>:${object.rotation.z.toFixed(2)} `,
+                    value: `<span class="badge badge-secondary">x</span>:${instRotation.x.toFixed(3)} <span class="badge badge-secondary">y</span>:${instRotation.y.toFixed(3)} <span class="badge badge-secondary">z</span>:${instRotation.z.toFixed(3)} <span class="badge badge-secondary">w</span>:${instRotation.w.toFixed(3)} `,
                     postprocess: function ( element ) {
                         element.find('span').click(function () {
+                            const rotation = editorToFileRotation(object.quaternion);
                             navigator.clipboard.writeText(`{
-    "x": ${object.quaternion.x.toFixed(2)},
-    "y": ${(object.quaternion.z).toFixed(2)},
-    "z": ${(object.quaternion.y * -1).toFixed(2)},
-    "w": ${object.quaternion.w.toFixed(2)}
+    "x": ${rotation.x.toFixed(6)},
+    "y": ${rotation.y.toFixed(6)},
+    "z": ${rotation.z.toFixed(6)},
+    "w": ${rotation.w.toFixed(6)}
 }`);
                         });
                     }

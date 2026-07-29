@@ -46,6 +46,9 @@ export default class RouteSelection{
      * @type {Route}
      */
     route = null;
+    isActive = true;
+    isMouseRegistered = false;
+    isKeyboardRegistered = false;
 
 
     /**
@@ -69,40 +72,37 @@ export default class RouteSelection{
             });
         });
 
+        Keyboard.onKeyUp('Escape', this.binding.keyUpEsc);
+        this.isKeyboardRegistered = true;
+
         /**
          * We need to delay the registration a little bit
          * Otherwise we receive the Click-Event from the Menu-Interaction
          */
         setTimeout(function () {
+            if (!_this.isActive) return;
             Mouse.onMouseClick(_this.binding.mouseClick);
-            Keyboard.onKeyUp('Escape', _this.binding.keyUpEsc);
+            _this.isMouseRegistered = true;
         }, 500);
     }
 
 
     unbind(){
-        Mouse.removeOnMouseClick(this.binding.mouseClick);
-        Keyboard.removeOnKeyUp('Escape', this.binding.keyUpEsc);
+        if (!this.isActive) return;
+        this.isActive = false;
 
-        this.onPlaceCallback(this.route);
+        if (this.isMouseRegistered)
+            Mouse.removeOnMouseClick(this.binding.mouseClick);
+        if (this.isKeyboardRegistered)
+            Keyboard.removeOnKeyUp('Escape', this.binding.keyUpEsc);
+
+        if (typeof this.onPlaceCallback === "function")
+            this.onPlaceCallback(this.route);
     }
 
 
     onKeyUpEsc(){
         this.unbind();
-    }
-
-    hackGetNodeByMesh(mesh){
-        let found = false;
-        this.waypoints.children.forEach(function (area) {
-            area.children.forEach(function (node) {
-                if (node.getMesh().children[0] === mesh)
-                    found = node;
-
-            });
-        });
-
-        return found;
     }
 
     onMouseClick(event){
@@ -116,13 +116,16 @@ export default class RouteSelection{
 
         let intersects = this.raycaster.intersectObjects(this.meshes, true);
 
-        if (intersects.length === 1){
-            let nodeMesh = intersects[0].object;
-            if (nodeMesh.name.substr(0, 5) !== "node_")
-                return;
+        for (let i = 0; i < intersects.length; i++){
+            let node = this.waypoints.getNode(intersects[i].object);
+            if (node === false)
+                continue;
 
-            let node = this.hackGetNodeByMesh(nodeMesh);
-            this.route.addNode(node);
+            if (this.route.hasNode(node))
+                this.route.removeNode(node);
+            else
+                this.route.addNode(node);
+            return;
         }
     }
 }

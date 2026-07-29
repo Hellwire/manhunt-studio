@@ -15,7 +15,7 @@
     "test": "test"
   },
   "scripts": {
-    "test": "find ./test -name '*.js' | xargs mocha -R spec"
+    "test": "mocha \"test/**/*.js\" -R spec"
   },
   "author": "",
   "license": "ISC",

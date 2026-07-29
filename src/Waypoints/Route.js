@@ -1,5 +1,4 @@
 import {Geometry, Line, LineBasicMaterial} from "../Vendor/three.module.js";
-import Helper from "../Helper.js";
 
 export default class Route{
 
@@ -53,6 +52,9 @@ export default class Route{
         if (mesh.parent !== null)
             mesh.parent.remove(mesh);
 
+        this.children.forEach(function (node) {
+            node.highlight(false);
+        });
         this.children = [];
         this.entity.props.entries = [];
         this.entity.props.locations = [];
@@ -64,6 +66,11 @@ export default class Route{
      * @param node {Node}
      */
     addNode(node){
+        if (!node || typeof node.getId !== "function") {
+            console.error("Unable to add a missing waypoint node to route", this.name);
+            return;
+        }
+
         if (this.children.indexOf(node) === -1){
             this.children.push(node);
 
@@ -78,6 +85,36 @@ export default class Route{
 
         if (this.isHighlighted)
             this.getMesh(); //regenerate line
+    }
+
+    /**
+     * @param node {Node}
+     * @returns {boolean}
+     */
+    hasNode(node){
+        return this.children.indexOf(node) !== -1;
+    }
+
+    /**
+     * Remove every reference to a node from both the route visualization and
+     * its serializable GRF data.
+     *
+     * @param node {Node}
+     */
+    removeNode(node){
+        if (!node) return;
+
+        const nodeId = node.getId();
+        this.children = this.children.filter(child => child !== node);
+        this.entity.props.entries = this.entity.props.entries.filter(entry => String(entry) !== String(nodeId));
+        this.entity.props.locations = this.entity.props.locations.filter(location => {
+            return location !== node.entity &&
+                (!location.props || String(location.props.id) !== String(nodeId));
+        });
+        node.highlight(false);
+
+        if (this.mesh !== null && this.mesh.parent !== null)
+            this.getMesh();
     }
 
     /**
@@ -115,7 +152,7 @@ export default class Route{
         geometry.dynamic = true;
 
         this.children.forEach(function (node) {
-            geometry.vertices.push(node.position);
+            geometry.vertices.push(node.getMesh().position);
         });
 
         let line = new Line(geometry, material);

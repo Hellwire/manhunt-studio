@@ -1,8 +1,12 @@
 import AbstractBuilder from "./../../Abstract.js";
-import Result from "../../../Loader/Result.js";
 import NBinary from "../../../../NBinary.js";
 import Studio from "../../../../Studio.js";
 import Games from "../../../../Plugin/Games.js";
+import {
+    editorToFilePosition,
+    GrfError,
+    writeGrf
+} from "../../../GrfFormat.js";
 
 export default class Grf extends AbstractBuilder {
     static name = "Waypoints (Manhunt 1/2)";
@@ -13,308 +17,259 @@ export default class Grf extends AbstractBuilder {
      * @returns {NBinary}
      */
     static build(game, level) {
-        const srcAreaLocations = game.findBy({
+        if (!game || (game.game !== Games.GAMES.MANHUNT && game.game !== Games.GAMES.MANHUNT_2)) {
+            throw new GrfError("Cannot export GRF because the loaded game could not be identified as Manhunt 1 or Manhunt 2");
+        }
+
+        const sourceAreas = game.findBy({
             level: level,
             type: Studio.AREA_LOCATION
         });
-
-        const srcWaypointRoutes = game.findBy({
+        const sourceRoutes = game.findBy({
             level: level,
             type: Studio.WAYPOINT_ROUTE
         });
 
-        // IMPORTANT:
-        // - Do NOT mutate editor data (srcAreaLocations/srcWaypointRoutes)
-        // - Create an export-only copy that is deduped + remapped
-        const { areaLocations, waypointRoutes } = Grf.prepareExport(srcAreaLocations, srcWaypointRoutes);
-
-        let binary = new NBinary(new ArrayBuffer(1024 * 1024));
-
-        if (game.game === Games.GAMES.MANHUNT_2) {
-            binary.setInt32(1095323207); // GNIA
-            binary.setInt32(1);          // const
-        }
-
-        binary.setInt32(areaLocations.length);
-
-        Grf.createAreas(binary, areaLocations, game);
-        Grf.createWaypointRoutes(binary, waypointRoutes);
-        Grf.createAreasNames(binary, areaLocations);
-
-        binary.end();
-        return binary;
+        const prepared = Grf.prepareExport(sourceAreas, sourceRoutes);
+        const graph = Grf.createGraph(game.game, prepared);
+        return new NBinary(writeGrf(graph, `${level || "<unknown level>"} GRF export`));
     }
 
-    // -----------------------
-    // Helpers
-    // -----------------------
-
-    /**
-     * Normalizes IDs that may be numbers, numeric strings, or legacy "*_reorder" strings.
-     * @param id {any}
-     * @returns {any}
-     */
     static normalizeId(id) {
         if (id === undefined || id === null) return id;
-
         if (typeof id === "string") {
             if (id.endsWith("_reorder")) id = id.slice(0, -"_reorder".length);
             if (/^-?\d+$/.test(id)) return parseInt(id, 10);
-            return id;
         }
-
         return id;
     }
 
-    /**
-     * Returns a stable “reference id” for a location used by waypoint linkIds.
-     * Prefers props.id, then props.linkId, then (as last resort) props.name.
-     *
-     * @param loc {Result|Object}
-     * @returns {any}
-     */
-    static getLocationRefId(loc) {
-        const p = loc?.props || {};
-        const a = Grf.normalizeId(p.id);
-        if (a !== undefined && a !== null) return a;
+    static normalizeInteger(value) {
+        if (typeof value === "string" && /^-?\d+$/.test(value)) {
+            return parseInt(value, 10);
+        }
+        return value;
+    }
 
-        const b = Grf.normalizeId(p.linkId);
-        if (b !== undefined && b !== null) return b;
-
-        const c = (p.name !== undefined && p.name !== null) ? String(p.name) : undefined;
-        return c;
+    static normalizeIntegerArray(values) {
+        return Array.isArray(values) ? values.map(Grf.normalizeInteger) : [];
     }
 
     /**
-     * Build an export-only copy:
-     * - Dedupes locations by refId (props.id / props.linkId)
-     * - Builds new sequential indices 0..n-1 for export
-     * - Remaps all waypoint linkIds and route entries to those new indices
-     * - Prunes broken references instead of crashing
-     *
-     * Does NOT mutate input arrays or objects.
-     *
-     * @param srcAreaLocations {Result[]}
-     * @param srcWaypointRoutes {Result[]}
-     * @returns {{ areaLocations: Object[], waypointRoutes: Object[] }}
+     * A GRF link points to the area's implicit file index. MHS keeps the
+     * imported index as an editor-only stable ID so deletions can be remapped.
      */
-    static prepareExport(srcAreaLocations, srcWaypointRoutes) {
-        // ---- 1) Deduplicate locations by stable ref id (NOT by name) ----
-        const kept = [];
-        const keptByRef = new Map();         // refId -> keptIndex (in kept)
-        const aliasRefToKeptRef = new Map(); // dupRef -> keptRef
+    static getLocationRefId(location) {
+        const props = location && location.props ? location.props : {};
+        const id = Grf.normalizeId(props.id);
+        if (id !== undefined && id !== null && id !== "") return id;
 
-        for (const loc of (srcAreaLocations || [])) {
-            const refId = Grf.getLocationRefId(loc);
-            // If no usable refId, keep it (cannot safely dedupe)
-            if (refId === undefined || refId === null || refId === "") {
-                kept.push(loc);
-                continue;
-            }
+        const legacyLinkId = Grf.normalizeId(props.linkId);
+        if (legacyLinkId !== undefined && legacyLinkId !== null && legacyLinkId !== "") {
+            return legacyLinkId;
+        }
+        return undefined;
+    }
 
-            if (!keptByRef.has(refId)) {
-                keptByRef.set(refId, kept.length);
-                kept.push(loc);
-                continue;
-            }
+    static locationLabel(location, index) {
+        const props = location && location.props ? location.props : {};
+        const displayName = props.name || props.nodeName || (location && location.name);
+        return displayName ? `"${displayName}"` : `at editor index ${index}`;
+    }
 
-            // Duplicate by refId: alias to the first one
-            aliasRefToKeptRef.set(refId, refId);
+    static resolveLocationIndex(reference, objectToIndex, refToIndex, context) {
+        if (reference && typeof reference === "object" && objectToIndex.has(reference)) {
+            return objectToIndex.get(reference);
         }
 
-        // ---- 2) Build export index mapping (refId -> exportIndex) ----
-        // Export index is the position in the deduped list.
-        const refToExportIndex = new Map();
-        kept.forEach((loc, idx) => {
-            const refId = Grf.getLocationRefId(loc);
-            if (refId !== undefined && refId !== null && refId !== "") {
-                // Map original ref id to new export index
-                if (!refToExportIndex.has(refId)) refToExportIndex.set(refId, idx);
-            }
-        });
+        const refId = reference && typeof reference === "object"
+            ? Grf.getLocationRefId(reference)
+            : Grf.normalizeId(reference);
 
-        // Also map duplicate refs to the same kept index (in case they exist in links)
-        for (const [dupRef] of aliasRefToKeptRef.entries()) {
-            if (refToExportIndex.has(dupRef)) continue; // unlikely
-            // dupRef maps to itself's kept ref in this alias scheme
-            // (keptByRef already points at the first occurrence)
-            if (keptByRef.has(dupRef)) {
-                refToExportIndex.set(dupRef, keptByRef.get(dupRef));
-            }
+        if (!refToIndex.has(refId)) {
+            throw new GrfError(`${context} references missing node ID ${String(refId)}`);
         }
+        return refToIndex.get(refId);
+    }
 
-        // ---- 3) Create export-copy of areaLocations with remapped waypoint linkIds ----
-        const exportAreaLocations = kept.map((loc) => {
-            const srcProps = loc?.props || {};
-            const srcWaypoints = Array.isArray(srcProps.waypoints) ? srcProps.waypoints : [];
+    static collectGroupNames(areas, routes) {
+        let groupNames = null;
+        [...areas, ...routes].forEach(function (entry) {
+            const candidate = entry && entry.props ? entry.props.grfGroupNames : null;
+            if (!Array.isArray(candidate)) return;
+            if (groupNames === null) {
+                groupNames = candidate.slice();
+                return;
+            }
+            candidate.forEach(function (name) {
+                if (groupNames.indexOf(name) === -1) groupNames.push(name);
+            });
+        });
+        return groupNames || [];
+    }
 
-            const newWaypoints = [];
-            for (const wp of srcWaypoints) {
-                if (!wp) continue;
+    /**
+     * Create an export-only copy and remap stable editor IDs to the file's
+     * required sequential indices. Invalid references are reported rather than
+     * silently dropped, because silent repair changes AI behavior.
+     */
+    static prepareExport(sourceAreas, sourceRoutes) {
+        const areas = Array.isArray(sourceAreas) ? sourceAreas : [];
+        const routes = Array.isArray(sourceRoutes) ? sourceRoutes : [];
+        const objectToIndex = new Map();
+        const refToIndex = new Map();
 
-                const oldLink = Grf.normalizeId(wp.linkId);
-                if (!refToExportIndex.has(oldLink)) {
-                    // broken link -> prune (export should not crash)
-                    continue;
-                }
-
-                newWaypoints.push({
-                    ...wp,
-                    linkId: refToExportIndex.get(oldLink),
-                    relation: Array.isArray(wp.relation) ? [...wp.relation] : []
-                });
+        areas.forEach(function (location, index) {
+            if (!location || !location.props) {
+                throw new GrfError(`Area location at editor index ${index} is missing its data`);
             }
 
-            const newProps = {
-                ...srcProps,
-                // DO NOT overwrite srcProps.id / srcProps.linkId (keeps editor stable)
-                unkFlags: Array.isArray(srcProps.unkFlags) ? [...srcProps.unkFlags] : [],
-                unkFlags2: Array.isArray(srcProps.unkFlags2) ? [...srcProps.unkFlags2] : [],
-                waypoints: newWaypoints
-            };
+            const refId = Grf.getLocationRefId(location);
+            if (refId === undefined) {
+                throw new GrfError(`Area location ${Grf.locationLabel(location, index)} has no node ID`);
+            }
+            if (refToIndex.has(refId)) {
+                throw new GrfError(`Duplicate node ID ${String(refId)}; every MapAI node must have a unique editor ID`);
+            }
 
-            // Minimal “Result-like” object used by writer
-            return {
-                name: loc?.name,
-                mesh: loc?.mesh,
-                props: newProps
-            };
+            objectToIndex.set(location, index);
+            refToIndex.set(refId, index);
         });
 
-        // ---- 4) Create export-copy of waypointRoutes with remapped entries ----
-        const exportWaypointRoutes = (srcWaypointRoutes || []).map((route) => {
-            const srcProps = route?.props || {};
-            const srcEntries = Array.isArray(srcProps.entries) ? srcProps.entries : [];
+        const groupNames = Grf.collectGroupNames(areas, routes);
+        const exportAreas = areas.map(function (location, areaIndex) {
+            const props = location.props;
+            const position = location.mesh && location.mesh.position
+                ? location.mesh.position
+                : props.position;
 
-            const newEntries = [];
-            for (const e of srcEntries) {
-                const old = Grf.normalizeId(e);
-                if (!refToExportIndex.has(old)) {
-                    // broken ref -> prune
-                    continue;
-                }
-                newEntries.push(refToExportIndex.get(old));
+            if (!position) {
+                throw new GrfError(`Area ${areaIndex} has no position`);
             }
 
+            let areaName = props.areaName;
+            if (areaName === undefined && Number.isInteger(props.groupIndex) &&
+                props.groupIndex >= 0 && props.groupIndex < groupNames.length) {
+                areaName = groupNames[props.groupIndex];
+            }
+            areaName = areaName === undefined || areaName === null ? "" : String(areaName);
+
+            let groupIndex = Grf.normalizeInteger(props.groupIndex);
+            if (groupIndex === -1 && areaName === "") {
+                // Preserve the format's explicit "no group" value.
+            } else if (Number.isInteger(groupIndex) && groupIndex >= 0 &&
+                groupIndex < groupNames.length && groupNames[groupIndex] === areaName) {
+                // Preserve the original group ordering, including unused groups.
+            } else {
+                groupIndex = groupNames.indexOf(areaName);
+                if (groupIndex === -1) {
+                    if (areaName === "") {
+                        groupIndex = -1;
+                    } else {
+                        groupNames.push(areaName);
+                        groupIndex = groupNames.length - 1;
+                    }
+                }
+            }
+
+            const sourceWaypoints = Array.isArray(props.waypoints) ? props.waypoints : [];
+            const waypoints = sourceWaypoints.map(function (waypoint, waypointIndex) {
+                if (!waypoint) {
+                    throw new GrfError(`Area ${areaIndex} waypoint ${waypointIndex} is missing`);
+                }
+                return {
+                    linkId: Grf.resolveLocationIndex(
+                        waypoint.linkId,
+                        objectToIndex,
+                        refToIndex,
+                        `Area ${areaIndex} waypoint ${waypointIndex}`
+                    ),
+                    type: Grf.normalizeInteger(waypoint.type),
+                    relation: Grf.normalizeIntegerArray(waypoint.relation)
+                };
+            });
+
             return {
-                name: route?.name,
+                name: location.name,
                 props: {
-                    ...srcProps,
-                    entries: newEntries
+                    ...props,
+                    name: props.name === undefined || props.name === null ? "" : String(props.name),
+                    nodeName: props.nodeName === undefined || props.nodeName === null ? "" : String(props.nodeName),
+                    areaName: areaName,
+                    groupIndex: groupIndex,
+                    position: {x: position.x, y: position.y, z: position.z},
+                    unkFlags: Grf.normalizeIntegerArray(props.unkFlags),
+                    unkFlags2: Grf.normalizeIntegerArray(props.unkFlags2),
+                    waypoints: waypoints,
+                    grfGroupNames: groupNames
+                }
+            };
+        });
+
+        const exportRoutes = routes.map(function (route, routeIndex) {
+            const props = route && route.props ? route.props : {};
+            const references = Array.isArray(props.locations)
+                ? props.locations
+                : (Array.isArray(props.entries) ? props.entries : []);
+            const entries = references.map(function (reference, entryIndex) {
+                return Grf.resolveLocationIndex(
+                    reference,
+                    objectToIndex,
+                    refToIndex,
+                    `Route ${routeIndex} entry ${entryIndex}`
+                );
+            });
+
+            return {
+                name: props.name === undefined || props.name === null
+                    ? String(route && route.name !== undefined ? route.name : "")
+                    : String(props.name),
+                props: {
+                    ...props,
+                    entries: entries,
+                    grfGroupNames: groupNames
                 }
             };
         });
 
         return {
-            areaLocations: exportAreaLocations,
-            waypointRoutes: exportWaypointRoutes
+            areaLocations: exportAreas,
+            waypointRoutes: exportRoutes,
+            groupNames: groupNames
         };
     }
 
-    /**
-     * @param binary
-     * @param areaLocations {Object[]}
-     */
-    static createAreasNames(binary, areaLocations) {
-        let groupIndex = [];
-        areaLocations.forEach(function (areaLocation) {
-            if (groupIndex.indexOf(areaLocation.props.areaName) !== -1) return;
-            groupIndex.push(areaLocation.props.areaName);
-        });
-
-        binary.setInt32(groupIndex.length);
-        groupIndex.forEach(function (name) {
-            binary.writeString(name, 0, true, 0x70);
-        });
-    }
-
-    /**
-     * @param binary {NBinary}
-     * @param waypointRoutes {Object[]}
-     */
-    static createWaypointRoutes(binary, waypointRoutes) {
-        binary.setInt32(waypointRoutes.length);
-
-        waypointRoutes.forEach(function (route) {
-            binary.writeString(route.name, 0, true, 0x70);
-
-            const entries = (route.props && route.props.entries) ? route.props.entries : [];
-            binary.setInt32(entries.length);
-
-            entries.forEach(function (nodeId) {
-                binary.setInt32(Grf.normalizeId(nodeId));
-            });
-        });
-    }
-
-    /**
-     * @param binary {NBinary}
-     * @param areaLocations {Object[]}
-     * @param game {Game}
-     */
-    static createAreas(binary, areaLocations, game) {
-        let groupIndex = [];
-        areaLocations.forEach(function (areaLocation) {
-            if (groupIndex.indexOf(areaLocation.props.areaName) !== -1) return;
-            groupIndex.push(areaLocation.props.areaName);
-        });
-
-        areaLocations.forEach(function (areaLocation) {
-            const mesh = areaLocation.mesh || { position: { x: 0, y: 0, z: 0 } };
-
-            if (areaLocation.props.unkFlags === undefined) areaLocation.props.unkFlags = [];
-            if (areaLocation.props.waypoints === undefined) areaLocation.props.waypoints = [];
-
-            binary.writeString(areaLocation.props.name, 0x0, true, 0x70);
-
-            binary.setInt32(groupIndex.indexOf(areaLocation.props.areaName));
-
-            // GRF coordinate system write:
-            // file.x = editor.x
-            // file.y = -editor.z
-            // file.z = editor.y
-            binary.setFloat32(mesh.position.x);
-            binary.setFloat32(mesh.position.z * -1);
-            binary.setFloat32(mesh.position.y);
-
-            binary.setFloat32(areaLocation.props.radius);
-            binary.writeString(areaLocation.props.nodeName, 0x0, true, 0x70);
-
-            // unkFlags
-            binary.setInt32(areaLocation.props.unkFlags.length);
-            areaLocation.props.unkFlags.forEach(function (flag) {
-                binary.setInt32(flag);
-            });
-
-            // unkFlags2 (Manhunt 2 only)
-            if (game.game === Games.GAMES.MANHUNT_2) {
-                if (areaLocation.props.unkFlags2 === undefined) areaLocation.props.unkFlags2 = [];
-
-                binary.setInt32(areaLocation.props.unkFlags2.length);
-                areaLocation.props.unkFlags2.forEach(function (flag) {
-                    binary.setInt32(flag);
-                });
-            }
-
-            // waypoints
-            binary.setInt32(areaLocation.props.waypoints.length);
-            areaLocation.props.waypoints.forEach(function (waypoint) {
-                if (waypoint.relation === undefined) waypoint.relation = [];
-
-                // waypoint.linkId is already remapped to export indices in prepareExport()
-                binary.setInt32(Grf.normalizeId(waypoint.linkId));
-                binary.setInt32(waypoint.type);
-
-                binary.setInt32(waypoint.relation.length);
-                waypoint.relation.forEach(function (flag) {
-                    binary.setInt32(flag);
-                });
-            });
-
-            if (game.game === Games.GAMES.MANHUNT_2) {
-                binary.setInt32(0);
-                binary.setInt32(0);
-            }
-        });
+    static createGraph(game, prepared) {
+        return {
+            game: game,
+            version: game === Games.GAMES.MANHUNT_2 ? 1 : null,
+            areas: prepared.areaLocations.map(function (location) {
+                const props = location.props;
+                return {
+                    name: props.name,
+                    groupIndex: props.groupIndex,
+                    position: editorToFilePosition(game, props.position),
+                    radius: props.radius,
+                    nodeName: props.nodeName,
+                    flags: props.unkFlags.slice(),
+                    flags2: props.unkFlags2.slice(),
+                    waypoints: props.waypoints.map(function (waypoint) {
+                        return {
+                            linkId: waypoint.linkId,
+                            type: waypoint.type,
+                            relations: waypoint.relation.slice()
+                        };
+                    }),
+                    tail: game === Games.GAMES.MANHUNT_2 ? [0, 0] : null
+                };
+            }),
+            routes: prepared.waypointRoutes.map(function (route) {
+                return {
+                    name: route.name,
+                    entries: route.props.entries.slice()
+                };
+            }),
+            groupNames: prepared.groupNames.slice()
+        };
     }
 }
